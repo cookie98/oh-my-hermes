@@ -1,5 +1,7 @@
 # oh-my-hermes
 
+[![pytest](https://github.com/cookie98/oh-my-hermes/actions/workflows/pytest.yml/badge.svg?branch=main)](https://github.com/cookie98/oh-my-hermes/actions/workflows/pytest.yml)
+
 Hermes-native orchestration layer inspired by oh-my-openagent / OMO.
 
 ## Current direction
