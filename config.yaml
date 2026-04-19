@@ -1,0 +1,43 @@
+enabled: true
+enabled_platforms:
+  - cli
+  - telegram
+  - slack
+trigger_keywords:
+  - ultrawork
+  - ulw
+  - sisyphus
+  - orchestrate
+  - omh-ulw
+inject_on_first_turn_only: false
+max_instruction_chars: 3200
+planning_backend:
+  preferred: hermes-native
+  optional_claude_code: true
+  optional_omc: true
+agents:
+  sisyphus:
+    role: main orchestrator
+    guidance: Hermes-first orchestrator. Classify intent, choose the correct route, decompose when useful, and verify aggressively before declaring completion.
+  oracle:
+    role: design and debugging reviewer
+    guidance: Use for design review, root-cause analysis, and skeptical validation of proposed fixes.
+  librarian:
+    role: documentation and codebase researcher
+    guidance: Use for repo reconnaissance, upstream references, and comparison with existing implementations.
+  hephaestus:
+    role: implementer
+    guidance: Use for focused implementation only after route, scope, and acceptance criteria are clear.
+categories:
+  deep:
+    guidance: Use for complex implementation, planning, or debugging with multiple moving parts.
+  quick:
+    guidance: Use for small bounded tasks where delegation overhead is not worth it.
+  review:
+    guidance: Use for code review, risk review, and post-implementation verification.
+delegate_runtime:
+  preferred: hermes-native
+  optional_acp_runtime:
+    command: opencode
+    args:
+      - acp
