@@ -245,6 +245,76 @@ def test_handle_omh_exec_command_refuses_duplicate_worker_dispatch_for_active_ex
         assert len(after_second['worker_orchestration']['worker_sessions']) == 1
 
 
+
+def test_handle_omh_exec_command_attaches_detached_supervision_to_active_worker():
+    module = _load_module('omh_exec')
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state_path = _write_state(workspace, state)
+
+        dispatch_result = module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        result = module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+        worker_id = updated['worker_orchestration']['active_worker_id']
+        session = updated['worker_orchestration']['worker_sessions'][worker_id]
+
+        assert 'worker-dispatched' in dispatch_result
+        assert 'Attached OMH worker supervision' in result
+        assert session['supervision']['session_id'] == 'proc-123'
+        assert session['supervision']['status'] == 'running'
+        assert updated['worker_orchestration']['mode'] == 'running'
+
+
+
+def test_handle_omh_exec_command_records_detached_worker_poll_update():
+    module = _load_module('omh_exec')
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state_path = _write_state(workspace, state)
+
+        module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        attached_result = module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
+        result = module.handle_omh_exec_command('poll proc-123 completed --exit-code 0 process exited cleanly', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+        worker_id = updated['worker_orchestration']['active_worker_id']
+        session = updated['worker_orchestration']['worker_sessions'][worker_id]
+
+        assert 'Attached OMH worker supervision' in attached_result
+        assert 'Recorded OMH worker supervision poll' in result
+        assert session['supervision']['status'] == 'completed'
+        assert session['supervision']['last_exit_code'] == 0
+        assert session['supervision']['last_observation'] == 'process exited cleanly'
+        assert updated['worker_orchestration']['mode'] == 'awaiting-worker-result'
+
+
+
+def test_handle_omh_exec_command_rejects_supervision_poll_for_unknown_session_id():
+    module = _load_module('omh_exec')
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        _write_state(workspace, state)
+
+        result = module.handle_omh_exec_command('poll proc-missing running still alive', workspace=workspace)
+
+        assert 'No active detached OMH worker matched session id' in result
+
+
+
 def test_handle_omh_exec_command_completes_current_task_and_promotes_next_pending_task():
     module = _load_module('omh_exec')
     plan_module = _load_module('omh_plan')
