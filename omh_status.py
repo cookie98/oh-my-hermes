@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from .atlas_state import AtlasStateSnapshot, get_workspace_root, read_atlas_state
-from .continuation_enforcement import ContinuationEnforcement, build_continuation_enforcement
+from .continuation_enforcement import ContinuationEnforcement, build_continuation_enforcement, build_idle_continuation_pressure
+from .continuation_hooks import describe_idle_continuation_lines
 from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervision
 from .task_sessions import summarize_task_sessions
 from .worker_orchestration import (
@@ -34,7 +35,13 @@ def _origin_counts(session_origins: Dict[str, Any]) -> Dict[str, int]:
     return counts
 
 
-def build_status_payload(workspace: Path | None = None, *, process_poller: ProcessPoller | None = None) -> Dict[str, Any]:
+def build_status_payload(
+    workspace: Path | None = None,
+    *,
+    process_poller: ProcessPoller | None = None,
+    now: str | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     snapshot: AtlasStateSnapshot = refresh_detached_worker_supervision(workspace or get_workspace_root(), process_poller=process_poller)
     root = snapshot.workspace
     state = snapshot.state or {}
@@ -51,6 +58,8 @@ def build_status_payload(workspace: Path | None = None, *, process_poller: Proce
     worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
     worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
     continuation_enforcement: ContinuationEnforcement = build_continuation_enforcement(snapshot)
+    idle_pressure = build_idle_continuation_pressure(snapshot, now=now, config=config)
+    idle_lines = describe_idle_continuation_lines(snapshot, now=now, config=config)
 
     plan_name = state.get('plan_name') or (active_plan_path.stem if active_plan_path else None)
 
@@ -87,6 +96,17 @@ def build_status_payload(workspace: Path | None = None, *, process_poller: Proce
             'reason': continuation_enforcement.reason,
             'next_action': continuation_enforcement.next_action,
         },
+        'idle_continuation': {
+            'active': idle_pressure.active,
+            'due': idle_pressure.due,
+            'level': idle_pressure.level,
+            'idle_minutes': idle_pressure.idle_minutes,
+            'threshold_minutes': idle_pressure.threshold_minutes,
+            'cooldown_active': idle_pressure.cooldown_active,
+            'cooldown_remaining_minutes': idle_pressure.cooldown_remaining_minutes,
+            'reason': idle_pressure.reason,
+        },
+        'idle_continuation_lines': idle_lines,
         'active_task_slugs': list(snapshot.active_task_slugs),
         'worktree': {
             'path': str(worktree_path) if worktree_path else None,
@@ -203,6 +223,7 @@ def render_status_text(payload: Dict[str, Any]) -> str:
     worker_reattachment = _format_worker_reattachment(payload)
     worker_supervision = _format_worker_supervision(payload)
     enforcement_level, next_action = _format_continuation_enforcement(payload)
+    idle_lines = list(payload.get('idle_continuation_lines') or [])
     active_worker_id = worker_orchestration.get('active_worker_id')
 
     if posture == 'idle':
@@ -242,6 +263,7 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append(enforcement_level)
         if next_action:
             lines.append(next_action)
+        lines.extend(idle_lines)
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
@@ -279,6 +301,7 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append(enforcement_level)
         if next_action:
             lines.append(next_action)
+        lines.extend(idle_lines)
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',

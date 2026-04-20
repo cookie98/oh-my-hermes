@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 from .atlas_state import get_workspace_root
-from .continuation_enforcement import build_continuation_enforcement
+from .continuation_enforcement import build_continuation_enforcement, build_idle_continuation_pressure
+from .continuation_hooks import describe_idle_continuation_lines
 from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervision
 from .worker_orchestration import build_worker_reattachment_summary, build_worker_supervision_summary
 
@@ -26,7 +27,14 @@ def _write_state(workspace: Path, state: Dict[str, Any]) -> Path:
     return state_path
 
 
-def build_resume_payload(raw_args: str, *, workspace: Path | None = None, process_poller: ProcessPoller | None = None) -> Dict[str, Any]:
+def build_resume_payload(
+    raw_args: str,
+    *,
+    workspace: Path | None = None,
+    process_poller: ProcessPoller | None = None,
+    now: str | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     if (raw_args or '').strip():
         raise ValueError('Usage: `/omh-resume`')
 
@@ -61,6 +69,7 @@ def build_resume_payload(raw_args: str, *, workspace: Path | None = None, proces
     worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
     worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
     continuation_enforcement = build_continuation_enforcement(snapshot)
+    idle_pressure = build_idle_continuation_pressure(snapshot, now=now, config=config)
 
     plan_name = state.get('plan_name') or Path(str(state.get('active_plan'))).stem
     return {
@@ -86,6 +95,17 @@ def build_resume_payload(raw_args: str, *, workspace: Path | None = None, proces
             'reason': continuation_enforcement.reason,
             'next_action': continuation_enforcement.next_action,
         },
+        'idle_continuation': {
+            'active': idle_pressure.active,
+            'due': idle_pressure.due,
+            'level': idle_pressure.level,
+            'idle_minutes': idle_pressure.idle_minutes,
+            'threshold_minutes': idle_pressure.threshold_minutes,
+            'cooldown_active': idle_pressure.cooldown_active,
+            'cooldown_remaining_minutes': idle_pressure.cooldown_remaining_minutes,
+            'reason': idle_pressure.reason,
+        },
+        'idle_continuation_lines': describe_idle_continuation_lines(snapshot, now=now, config=config),
         'active_task_slugs': list(snapshot.active_task_slugs),
     }
 
@@ -120,6 +140,8 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
     if enforcement.get('active'):
         enforcement_line = f'Continuation Enforcement: {"strict" if enforcement.get("strict") else "soft"}\n'
         next_action_line = f'Next Action: {enforcement.get("next_action") or "Continue the current OMH execution."}\n'
+    idle_lines = payload.get('idle_continuation_lines') or []
+    idle_block = ''.join(f'{line}\n' for line in idle_lines)
     return (
         'Resuming OMH work session\n\n'
         f'Active Plan: {plan.get("name")}\n'
@@ -133,7 +155,8 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
         f'{supervision_session_line}'
         f'{supervision_status_line}'
         f'{enforcement_line}'
-        f'{next_action_line}\n'
+        f'{next_action_line}'
+        f'{idle_block}\n'
         'Continuing from the last incomplete execution state...'
     )
 
