@@ -241,3 +241,143 @@ def test_normalize_worker_orchestration_prefers_latest_live_session_with_dispatc
     assert normalized['active_worker_id'] == 'worker-newer'
     assert normalized['current_task_slug'] == 'new-task'
     assert normalized['mode'] == 'running'
+
+
+
+def test_dispatch_exec_worker_seeds_detached_supervision_metadata(tmp_path):
+    orchestration_module = _load_module('worker_orchestration')
+
+    state = {
+        'current_wave': 1,
+        'task_sessions': {
+            'task-a': {
+                'task_slug': 'task-a',
+                'status': 'in_progress',
+            }
+        },
+        'worker_orchestration': orchestration_module.normalize_worker_orchestration({}),
+    }
+
+    next_state = orchestration_module.dispatch_exec_worker(state, tmp_path, task_slug='task-a', summary='draft handoff')
+    worker_id = next_state['worker_orchestration']['active_worker_id']
+    session = next_state['worker_orchestration']['worker_sessions'][worker_id]
+
+    assert session['supervision'] == {
+        'detached': False,
+        'session_id': None,
+        'status': 'untracked',
+        'command': None,
+        'attached_at': None,
+        'last_polled_at': None,
+        'last_exit_code': None,
+        'last_observation': None,
+    }
+
+
+
+def test_attach_worker_supervision_marks_active_worker_as_detached_running():
+    orchestration_module = _load_module('worker_orchestration')
+
+    state = {
+        'worker_orchestration': orchestration_module.normalize_worker_orchestration(
+            {
+                'active_worker_id': 'worker-a',
+                'current_task_slug': 'task-a',
+                'mode': 'dispatching',
+                'worker_sessions': {
+                    'worker-a': {
+                        'worker_id': 'worker-a',
+                        'task_slug': 'task-a',
+                        'status': 'dispatching',
+                    }
+                },
+            }
+        )
+    }
+
+    next_state = orchestration_module.attach_worker_supervision(state, session_id='proc-123', command='codex exec ...')
+    session = next_state['worker_orchestration']['worker_sessions']['worker-a']
+
+    assert session['supervision']['detached'] is True
+    assert session['supervision']['session_id'] == 'proc-123'
+    assert session['supervision']['status'] == 'running'
+    assert session['supervision']['command'] == 'codex exec ...'
+    assert next_state['worker_orchestration']['mode'] == 'running'
+
+
+
+def test_record_worker_supervision_poll_tracks_terminal_background_state_without_consuming_task_result():
+    orchestration_module = _load_module('worker_orchestration')
+
+    state = {
+        'worker_orchestration': orchestration_module.normalize_worker_orchestration(
+            {
+                'active_worker_id': 'worker-a',
+                'current_task_slug': 'task-a',
+                'mode': 'running',
+                'worker_sessions': {
+                    'worker-a': {
+                        'worker_id': 'worker-a',
+                        'task_slug': 'task-a',
+                        'status': 'running',
+                        'supervision': {
+                            'detached': True,
+                            'session_id': 'proc-123',
+                            'status': 'running',
+                            'command': 'codex exec ...',
+                        },
+                    }
+                },
+            }
+        )
+    }
+
+    next_state = orchestration_module.record_worker_supervision_poll(
+        state,
+        session_id='proc-123',
+        status='completed',
+        observation='process exited cleanly',
+        exit_code=0,
+    )
+    session = next_state['worker_orchestration']['worker_sessions']['worker-a']
+    normalized = orchestration_module.normalize_worker_orchestration(next_state['worker_orchestration'])
+
+    assert session['supervision']['status'] == 'completed'
+    assert session['supervision']['last_exit_code'] == 0
+    assert session['supervision']['last_observation'] == 'process exited cleanly'
+    assert next_state['worker_orchestration']['active_worker_id'] == 'worker-a'
+    assert next_state['worker_orchestration']['mode'] == 'awaiting-worker-result'
+    assert normalized['active_worker_id'] == 'worker-a'
+    assert normalized['mode'] == 'awaiting-worker-result'
+
+
+
+def test_record_worker_supervision_poll_rejects_stale_session_after_active_worker_clears():
+    orchestration_module = _load_module('worker_orchestration')
+
+    state = {
+        'worker_orchestration': orchestration_module.normalize_worker_orchestration(
+            {
+                'worker_sessions': {
+                    'worker-a': {
+                        'worker_id': 'worker-a',
+                        'task_slug': 'task-a',
+                        'status': 'completed',
+                        'supervision': {
+                            'detached': True,
+                            'session_id': 'proc-123',
+                            'status': 'completed',
+                        },
+                    }
+                },
+            }
+        )
+    }
+
+    with pytest.raises(ValueError, match='No active detached OMH worker matched session id'):
+        orchestration_module.record_worker_supervision_poll(
+            state,
+            session_id='proc-123',
+            status='running',
+            observation='late poll should not mutate state',
+        )

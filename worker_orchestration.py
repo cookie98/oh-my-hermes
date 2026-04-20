@@ -44,6 +44,18 @@ _WORKER_OUTCOME_ALIASES = {
     'canceled': 'cancelled',
 }
 
+_VALID_WORKER_SUPERVISION_STATUSES = {
+    'untracked',
+    'running',
+    'completed',
+    'failed',
+    'lost',
+}
+_TERMINAL_WORKER_SUPERVISION_STATUSES = {
+    'completed',
+    'failed',
+    'lost',
+}
 _WORKER_ID_NON_ALNUM_RE = re.compile(r'[^a-z0-9]+')
 
 
@@ -63,6 +75,27 @@ def _normalize_worker_session_status(value: Any) -> str:
     if not status or status not in _VALID_WORKER_SESSION_STATUSES:
         return 'dispatch_ready'
     return status
+
+
+def _normalize_worker_supervision_status(value: Any) -> str:
+    status = str(value).strip().lower() if value is not None else ''
+    if not status or status not in _VALID_WORKER_SUPERVISION_STATUSES:
+        return 'untracked'
+    return status
+
+
+def _normalize_worker_supervision(payload: Dict[str, Any] | None) -> Dict[str, Any]:
+    raw = payload if isinstance(payload, dict) else {}
+    return {
+        'detached': bool(raw.get('detached')),
+        'session_id': _normalize_text(raw.get('session_id')),
+        'status': _normalize_worker_supervision_status(raw.get('status')),
+        'command': _normalize_text(raw.get('command')),
+        'attached_at': _normalize_text(raw.get('attached_at')),
+        'last_polled_at': _normalize_text(raw.get('last_polled_at')),
+        'last_exit_code': raw.get('last_exit_code') if isinstance(raw.get('last_exit_code'), int) else None,
+        'last_observation': _normalize_text(raw.get('last_observation')),
+    }
 
 
 def _worker_session_sort_key(session: Dict[str, Any]) -> tuple[str, str]:
@@ -89,6 +122,12 @@ def _reattach_active_worker(normalized: Dict[str, Any]) -> None:
     active_session = worker_sessions.get(active_worker_id) if active_worker_id in worker_sessions else None
     had_terminal_active_session = False
     if active_session is not None:
+        supervision = _normalize_worker_supervision(active_session.get('supervision'))
+        if supervision.get('status') in _TERMINAL_WORKER_SUPERVISION_STATUSES:
+            normalized['active_worker_id'] = active_session.get('worker_id')
+            normalized['current_task_slug'] = _normalize_text(active_session.get('task_slug'))
+            normalized['mode'] = _normalize_text(active_session.get('mode'), default='awaiting-worker-result') or 'awaiting-worker-result'
+            return
         active_status = str(active_session.get('status') or '').strip().lower()
         if active_status not in _NONTERMINAL_WORKER_SESSION_STATUSES:
             active_session = None
@@ -168,6 +207,7 @@ def normalize_worker_orchestration(payload: Dict[str, Any] | None) -> Dict[str, 
                 suffix += 1
             session_payload['worker_id'] = worker_id
             session_payload['status'] = _normalize_worker_session_status(session_payload.get('status'))
+            session_payload['supervision'] = _normalize_worker_supervision(session_payload.get('supervision'))
             worker_sessions[worker_id] = session_payload
 
     normalized['worker_sessions'] = worker_sessions
@@ -192,6 +232,26 @@ def build_worker_reattachment_summary(payload: Dict[str, Any] | None) -> Dict[st
         'active_worker_id': active_worker_id,
         'current_task_slug': current_task_slug,
         'status': status,
+    }
+
+
+def build_worker_supervision_summary(payload: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    orchestration = normalize_worker_orchestration(payload)
+    active_worker_id = _normalize_text(orchestration.get('active_worker_id'))
+    if not active_worker_id:
+        return None
+    session = (orchestration.get('worker_sessions') or {}).get(active_worker_id)
+    if not isinstance(session, dict):
+        return None
+    supervision = _normalize_worker_supervision(session.get('supervision'))
+    if supervision.get('status') == 'untracked':
+        return None
+    return {
+        'session_id': supervision.get('session_id'),
+        'status': supervision.get('status'),
+        'detached': bool(supervision.get('detached')),
+        'last_exit_code': supervision.get('last_exit_code'),
+        'last_observation': supervision.get('last_observation'),
     }
 
 
@@ -245,6 +305,7 @@ def dispatch_exec_worker(
         'dispatched_at': stamp,
         'updated_at': stamp,
         'handoff_path': str(handoff_path),
+        'supervision': _normalize_worker_supervision({}),
     }
     orchestration['active_worker_id'] = worker_id
     orchestration['current_task_slug'] = task_slug
@@ -262,6 +323,76 @@ def _normalize_worker_outcome(outcome: Any) -> str | None:
     if not text:
         return None
     return _WORKER_OUTCOME_ALIASES.get(text)
+
+
+def attach_worker_supervision(state: Dict[str, Any], *, session_id: str, command: str | None = None) -> Dict[str, Any]:
+    stamp = _now_iso()
+    next_state = dict(state)
+    orchestration = normalize_worker_orchestration(next_state.get('worker_orchestration') or {})
+    worker_id = orchestration.get('active_worker_id')
+    if not worker_id:
+        return next_state
+    worker_sessions = dict(orchestration.get('worker_sessions') or {})
+    session = dict(worker_sessions.get(worker_id) or {'worker_id': worker_id})
+    supervision = _normalize_worker_supervision(session.get('supervision'))
+    supervision.update({
+        'detached': True,
+        'session_id': session_id.strip(),
+        'status': 'running',
+        'command': _normalize_text(command),
+        'attached_at': stamp,
+        'last_polled_at': stamp,
+    })
+    session['supervision'] = supervision
+    session['status'] = 'running'
+    session['mode'] = 'running'
+    session['updated_at'] = stamp
+    worker_sessions[worker_id] = session
+    orchestration['worker_sessions'] = worker_sessions
+    orchestration['mode'] = 'running'
+    next_state['worker_orchestration'] = orchestration
+    next_state['updated_at'] = stamp
+    return next_state
+
+
+def record_worker_supervision_poll(
+    state: Dict[str, Any],
+    *,
+    session_id: str,
+    status: Any,
+    observation: str | None = None,
+    exit_code: int | None = None,
+) -> Dict[str, Any]:
+    stamp = _now_iso()
+    next_state = dict(state)
+    orchestration = normalize_worker_orchestration(next_state.get('worker_orchestration') or {})
+    worker_id = orchestration.get('active_worker_id')
+    if not worker_id:
+        raise ValueError(f'No active detached OMH worker matched session id: {session_id}')
+
+    worker_sessions = dict(orchestration.get('worker_sessions') or {})
+    target_session = dict(worker_sessions.get(worker_id) or {})
+    supervision = _normalize_worker_supervision(target_session.get('supervision'))
+    if supervision.get('session_id') != session_id.strip():
+        raise ValueError(f'No active detached OMH worker matched session id: {session_id}')
+
+    normalized_status = _normalize_worker_supervision_status(status)
+    if normalized_status == 'untracked':
+        raise ValueError(f'Unknown worker supervision status: {status!r}')
+
+    supervision['status'] = normalized_status
+    supervision['last_polled_at'] = stamp
+    supervision['last_observation'] = _normalize_text(observation)
+    supervision['last_exit_code'] = exit_code if isinstance(exit_code, int) else None
+    target_session['supervision'] = supervision
+    target_session['mode'] = 'awaiting-worker-result' if normalized_status in _TERMINAL_WORKER_SUPERVISION_STATUSES else 'running'
+    target_session['updated_at'] = stamp
+    worker_sessions[worker_id] = target_session
+    orchestration['worker_sessions'] = worker_sessions
+    orchestration['mode'] = target_session['mode']
+    next_state['worker_orchestration'] = orchestration
+    next_state['updated_at'] = stamp
+    return next_state
 
 
 def record_worker_result(
@@ -285,6 +416,10 @@ def record_worker_result(
     session['outcome'] = normalized_outcome
     if summary is not None:
         session['summary'] = summary
+    supervision = _normalize_worker_supervision(session.get('supervision'))
+    if supervision.get('status') != 'untracked' and normalized_outcome in _WORKER_OUTCOME_ALIASES.values():
+        supervision['last_polled_at'] = stamp
+    session['supervision'] = supervision
     session['updated_at'] = stamp
     if normalized_outcome == 'completed':
         session['completed_at'] = stamp
