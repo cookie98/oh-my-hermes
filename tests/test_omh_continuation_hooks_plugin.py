@@ -124,6 +124,46 @@ def test_build_continuation_context_includes_active_resumable_state_details():
         assert 'Current Task: keep-going' in context
 
 
+def test_build_continuation_context_includes_worker_result_bridge_lines():
+    atlas_state = _load_module('atlas_state')
+    module = _load_module('continuation_hooks')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        _write_resumable_state(workspace)
+        state_path = workspace / '.omh' / 'state' / 'atlas-state.json'
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['worker_orchestration'] = {
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'keep-going',
+            'mode': 'awaiting-worker-result',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'keep-going',
+                    'status': 'running',
+                    'mode': 'awaiting-worker-result',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'completed',
+                        'last_exit_code': 0,
+                        'last_observation': 'process exited cleanly',
+                    },
+                }
+            },
+        }
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        snapshot = atlas_state.read_atlas_state(workspace=workspace)
+        context = module.build_continuation_context(snapshot)
+
+        assert 'Worker Result Bridge: ready (recommended=complete)' in context
+        assert 'Suggested Command: omh-exec accept' in context
+
+
+
 def test_pre_llm_call_injects_continuation_context_on_first_turn_with_resumable_state():
     module = _load_module('__init__')
 

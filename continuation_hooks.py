@@ -10,7 +10,11 @@ from .continuation_enforcement import (
     build_continuation_enforcement,
     build_idle_continuation_pressure,
 )
-from .worker_orchestration import build_worker_reattachment_summary, build_worker_supervision_summary
+from .worker_orchestration import (
+    build_worker_reattachment_summary,
+    build_worker_result_bridge,
+    build_worker_supervision_summary,
+)
 
 _CONTINUATION_WORD_RE = re.compile(r'\b(?:continue|resume|keep going|next task|next step)\b', re.IGNORECASE)
 _CONTINUATION_KOREAN_CUES = (
@@ -159,6 +163,7 @@ def build_continuation_context(
     progress = _format_progress(snapshot)
     worker_reattachment = build_worker_reattachment_summary((snapshot.state or {}).get('worker_orchestration') or {})
     worker_supervision = build_worker_supervision_summary((snapshot.state or {}).get('worker_orchestration') or {})
+    worker_result_bridge = build_worker_result_bridge((snapshot.state or {}).get('worker_orchestration') or {})
     continuation_enforcement = build_continuation_enforcement(snapshot)
     idle_lines = describe_idle_continuation_lines(snapshot, now=now, config=config)
 
@@ -182,6 +187,11 @@ def build_continuation_context(
         lines.extend([
             f'Detached Worker Session: {worker_supervision.get("session_id")}',
             f'Detached Worker Status: {worker_supervision.get("status") or "unknown"}',
+        ])
+    if worker_result_bridge and worker_result_bridge.get('ready'):
+        lines.extend([
+            f'Worker Result Bridge: ready (recommended={worker_result_bridge.get("recommended_action") or "unknown"})',
+            'Suggested Command: omh-exec accept',
         ])
     if continuation_enforcement.active:
         lines.extend([
