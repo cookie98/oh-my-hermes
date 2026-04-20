@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .atlas_state import AtlasStateSnapshot
-from .continuation_enforcement import build_continuation_enforcement
+from .continuation_enforcement import (
+    IdleContinuationPressure,
+    build_continuation_enforcement,
+    build_idle_continuation_pressure,
+)
 from .worker_orchestration import build_worker_reattachment_summary, build_worker_supervision_summary
 
 _CONTINUATION_WORD_RE = re.compile(r'\b(?:continue|resume|keep going|next task|next step)\b', re.IGNORECASE)
@@ -36,6 +40,7 @@ def is_continuation_prompt(user_message: str) -> bool:
     return any(cue in lowered for cue in _CONTINUATION_KOREAN_CUES)
 
 
+
 def should_inject_continuation_context(*, user_message: str, is_first_turn: bool, resumable: bool) -> bool:
     if not resumable:
         return False
@@ -47,6 +52,16 @@ def should_inject_continuation_context(*, user_message: str, is_first_turn: bool
     if not text:
         return True
     return bool(_FIRST_TURN_GREETING_RE.match(text))
+
+
+
+def should_inject_idle_continuation_context(*, user_message: str, is_first_turn: bool, idle_pressure: IdleContinuationPressure) -> bool:
+    if not is_first_turn:
+        return False
+    if not idle_pressure.active or not idle_pressure.due:
+        return False
+    return not is_continuation_prompt(user_message)
+
 
 
 def _resolve_plan_name(snapshot: AtlasStateSnapshot) -> str:
@@ -62,6 +77,7 @@ def _resolve_plan_name(snapshot: AtlasStateSnapshot) -> str:
     return 'unknown'
 
 
+
 def _resolve_stage(snapshot: AtlasStateSnapshot) -> str:
     state = snapshot.state or {}
     stage = state.get('current_stage')
@@ -72,12 +88,14 @@ def _resolve_stage(snapshot: AtlasStateSnapshot) -> str:
     return 'unknown'
 
 
+
 def _resolve_wave(snapshot: AtlasStateSnapshot) -> str:
     state = snapshot.state or {}
     wave = state.get('current_wave')
     if wave is None:
         return 'unknown'
     return str(wave)
+
 
 
 def _resolve_current_task_slug(snapshot: AtlasStateSnapshot) -> str:
@@ -98,13 +116,42 @@ def _resolve_current_task_slug(snapshot: AtlasStateSnapshot) -> str:
     return 'none'
 
 
+
 def _format_progress(snapshot: AtlasStateSnapshot) -> str | None:
     if snapshot.progress is None:
         return None
     return f'{snapshot.progress.completed}/{snapshot.progress.total}'
 
 
-def build_continuation_context(snapshot: AtlasStateSnapshot) -> str:
+
+def describe_idle_continuation_lines(
+    snapshot: AtlasStateSnapshot,
+    *,
+    now: str | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> list[str]:
+    pressure = build_idle_continuation_pressure(snapshot, now=now, config=config)
+    if not pressure.active:
+        return []
+
+    status = 'due' if pressure.due else ('cooldown' if pressure.cooldown_active else 'waiting')
+    lines = [
+        f'Idle Continuation: {status}',
+        f'Idle Age: {pressure.idle_minutes}m',
+        f'Idle Threshold: {pressure.threshold_minutes}m',
+    ]
+    if pressure.cooldown_active:
+        lines.append(f'Idle Cooldown Remaining: {pressure.cooldown_remaining_minutes}m')
+    return lines
+
+
+
+def build_continuation_context(
+    snapshot: AtlasStateSnapshot,
+    *,
+    now: str | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> str:
     plan_name = _resolve_plan_name(snapshot)
     stage = _resolve_stage(snapshot)
     wave = _resolve_wave(snapshot)
@@ -113,6 +160,7 @@ def build_continuation_context(snapshot: AtlasStateSnapshot) -> str:
     worker_reattachment = build_worker_reattachment_summary((snapshot.state or {}).get('worker_orchestration') or {})
     worker_supervision = build_worker_supervision_summary((snapshot.state or {}).get('worker_orchestration') or {})
     continuation_enforcement = build_continuation_enforcement(snapshot)
+    idle_lines = describe_idle_continuation_lines(snapshot, now=now, config=config)
 
     lines = [
         'OMH continuation reminder.',
@@ -140,5 +188,6 @@ def build_continuation_context(snapshot: AtlasStateSnapshot) -> str:
             f'Continuation Enforcement: {"strict" if continuation_enforcement.strict else "soft"}',
             f'Next Action: {continuation_enforcement.next_action}',
         ])
+    lines.extend(idle_lines)
     lines.append('Continue from the current OMH execution state instead of restarting the workflow.')
     return '\n'.join(lines)

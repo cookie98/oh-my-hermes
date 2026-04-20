@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict
@@ -7,7 +8,12 @@ from typing import Any, Dict
 import yaml
 
 from .atlas_state import get_workspace_root, read_atlas_state
-from .continuation_hooks import build_continuation_context, should_inject_continuation_context
+from .continuation_enforcement import build_idle_continuation_pressure
+from .continuation_hooks import (
+    build_continuation_context,
+    should_inject_continuation_context,
+    should_inject_idle_continuation_context,
+)
 from .omh_exec import handle_omh_exec_command
 from .omh_fix import handle_omh_fix_command
 from .omh_plan import handle_omh_plan_command
@@ -29,6 +35,12 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
     'trigger_keywords': ['ultrawork', 'ulw', 'sisyphus', 'orchestrate', 'omh-ulw'],
     'inject_on_first_turn_only': False,
     'max_instruction_chars': 3200,
+    'idle_continuation': {
+        'enabled': True,
+        'soft_threshold_minutes': 60,
+        'strict_threshold_minutes': 15,
+        'cooldown_minutes': 30,
+    },
     'agents': {},
     'categories': {},
     'delegate_runtime': {'preferred': 'hermes-native'},
@@ -48,6 +60,9 @@ def _load_config() -> Dict[str, Any]:
             if isinstance(loaded, dict):
                 merged = dict(config)
                 merged.update(loaded)
+                idle_defaults = dict(_DEFAULT_CONFIG.get('idle_continuation') or {})
+                loaded_idle = loaded.get('idle_continuation') if isinstance(loaded.get('idle_continuation'), dict) else {}
+                merged['idle_continuation'] = {**idle_defaults, **loaded_idle}
                 config = merged
     except Exception as exc:
         logger.warning('oh-my-hermes: failed to load config: %s', exc)
@@ -63,7 +78,42 @@ def _resolve_process_poller(ctx: Any | None):
     return candidate if callable(candidate) else None
 
 
-def _pre_llm_call_impl(*, process_poller: Any = None, user_message: str = '', platform: str = '', is_first_turn: bool = False, **_: Any) -> Dict[str, str] | None:
+def _state_file(workspace: Path) -> Path:
+    return workspace / '.omh' / 'state' / 'atlas-state.json'
+
+
+def _write_idle_continuation_nudge(workspace: Path, *, timestamp: str) -> None:
+    state_path = _state_file(workspace)
+    if not state_path.exists():
+        return
+    try:
+        raw = json.loads(state_path.read_text(encoding='utf-8'))
+    except Exception:
+        return
+    if not isinstance(raw, dict):
+        return
+
+    continuation = raw.get('continuation_enforcement') if isinstance(raw.get('continuation_enforcement'), dict) else {}
+    idle = continuation.get('idle') if isinstance(continuation.get('idle'), dict) else {}
+    next_idle = dict(idle)
+    next_idle['last_nudged_at'] = timestamp
+    next_idle['nudge_count'] = int(next_idle.get('nudge_count') or 0) + 1
+    continuation = dict(continuation)
+    continuation['idle'] = next_idle
+    raw['continuation_enforcement'] = continuation
+    state_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+
+def _pre_llm_call_impl(
+    *,
+    process_poller: Any = None,
+    user_message: str = '',
+    platform: str = '',
+    is_first_turn: bool = False,
+    now: str | None = None,
+    **_: Any,
+) -> Dict[str, str] | None:
     config = _load_config()
     if not config.get('enabled', True):
         return None
@@ -79,10 +129,30 @@ def _pre_llm_call_impl(*, process_poller: Any = None, user_message: str = '', pl
 
     snapshot = read_atlas_state()
     should_refresh = should_inject_continuation_context(user_message=message, is_first_turn=is_first_turn, resumable=snapshot.resumable)
-    if should_refresh and process_poller:
+    idle_settings = config.get('idle_continuation') if isinstance(config.get('idle_continuation'), dict) else {}
+    idle_pressure = build_idle_continuation_pressure(snapshot, now=now, config=idle_settings)
+    should_force_idle = bool(idle_settings.get('enabled', True)) and should_inject_idle_continuation_context(
+        user_message=message,
+        is_first_turn=is_first_turn,
+        idle_pressure=idle_pressure,
+    )
+
+    if (should_refresh or should_force_idle) and process_poller:
         snapshot = refresh_detached_worker_supervision(get_workspace_root(), process_poller=process_poller)
+        idle_pressure = build_idle_continuation_pressure(snapshot, now=now, config=idle_settings)
+        should_force_idle = bool(idle_settings.get('enabled', True)) and should_inject_idle_continuation_context(
+            user_message=message,
+            is_first_turn=is_first_turn,
+            idle_pressure=idle_pressure,
+        )
+
     if should_inject_continuation_context(user_message=message, is_first_turn=is_first_turn, resumable=snapshot.resumable):
-        return {'context': build_continuation_context(snapshot)}
+        return {'context': build_continuation_context(snapshot, now=now, config=idle_settings)}
+
+    if should_force_idle:
+        if now:
+            _write_idle_continuation_nudge(get_workspace_root(), timestamp=now)
+        return {'context': build_continuation_context(snapshot, now=now, config=idle_settings)}
 
     if config.get('inject_on_first_turn_only') and not is_first_turn:
         return None

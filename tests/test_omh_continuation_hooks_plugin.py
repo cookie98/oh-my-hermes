@@ -145,7 +145,7 @@ def test_pre_llm_call_injects_continuation_context_on_first_turn_with_resumable_
         assert 'Current Task: keep-going' in result['context']
 
 
-def test_pre_llm_call_does_not_inject_on_unrelated_first_turn_even_with_resumable_state():
+def test_pre_llm_call_does_not_inject_on_unrelated_first_turn_even_with_resumable_state_before_idle_threshold():
     module = _load_module('__init__')
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -154,7 +154,99 @@ def test_pre_llm_call_does_not_inject_on_unrelated_first_turn_even_with_resumabl
         previous_cwd = os.environ.get('TERMINAL_CWD')
         os.environ['TERMINAL_CWD'] = str(workspace)
         try:
-            result = module._pre_llm_call(user_message='what restaurants are nearby?', platform='cli', is_first_turn=True)
+            result = module._pre_llm_call(
+                user_message='what restaurants are nearby?',
+                platform='cli',
+                is_first_turn=True,
+                now='2026-04-20T00:10:00Z',
+            )
+        finally:
+            if previous_cwd is None:
+                os.environ.pop('TERMINAL_CWD', None)
+            else:
+                os.environ['TERMINAL_CWD'] = previous_cwd
+
+        assert result is None
+
+
+def test_pre_llm_call_injects_continuation_context_for_unrelated_first_turn_after_idle_threshold():
+    module = _load_module('__init__')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        _write_resumable_state(workspace)
+        previous_cwd = os.environ.get('TERMINAL_CWD')
+        os.environ['TERMINAL_CWD'] = str(workspace)
+        try:
+            result = module._pre_llm_call(
+                user_message='what restaurants are nearby?',
+                platform='cli',
+                is_first_turn=True,
+                now='2026-04-20T02:00:00Z',
+            )
+        finally:
+            if previous_cwd is None:
+                os.environ.pop('TERMINAL_CWD', None)
+            else:
+                os.environ['TERMINAL_CWD'] = previous_cwd
+
+        assert result is not None
+        assert 'OMH continuation reminder' in result['context']
+        assert 'Idle Continuation: due' in result['context']
+        assert 'Idle Age: 120m' in result['context']
+
+
+def test_pre_llm_call_persists_idle_nudge_timestamp_when_idle_pressure_fires():
+    module = _load_module('__init__')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_resumable_state(workspace)
+        previous_cwd = os.environ.get('TERMINAL_CWD')
+        os.environ['TERMINAL_CWD'] = str(workspace)
+        try:
+            result = module._pre_llm_call(
+                user_message='what restaurants are nearby?',
+                platform='cli',
+                is_first_turn=True,
+                now='2026-04-20T02:00:00Z',
+            )
+        finally:
+            if previous_cwd is None:
+                os.environ.pop('TERMINAL_CWD', None)
+            else:
+                os.environ['TERMINAL_CWD'] = previous_cwd
+
+        assert result is not None
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        assert raw_state['continuation_enforcement']['idle']['last_nudged_at'] == '2026-04-20T02:00:00Z'
+        assert raw_state['continuation_enforcement']['idle']['nudge_count'] == 1
+
+
+
+def test_pre_llm_call_skips_unrelated_idle_nudge_inside_cooldown_window():
+    module = _load_module('__init__')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_resumable_state(workspace)
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['continuation_enforcement'] = {
+            'idle': {
+                'last_nudged_at': '2026-04-20T01:50:00Z',
+                'nudge_count': 1,
+            }
+        }
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+        previous_cwd = os.environ.get('TERMINAL_CWD')
+        os.environ['TERMINAL_CWD'] = str(workspace)
+        try:
+            result = module._pre_llm_call(
+                user_message='what restaurants are nearby?',
+                platform='cli',
+                is_first_turn=True,
+                now='2026-04-20T02:00:00Z',
+            )
         finally:
             if previous_cwd is None:
                 os.environ.pop('TERMINAL_CWD', None)
@@ -345,7 +437,12 @@ def test_pre_llm_call_does_not_auto_poll_for_unrelated_turns_even_when_callback_
         previous_cwd = os.environ.get('TERMINAL_CWD')
         os.environ['TERMINAL_CWD'] = str(workspace)
         try:
-            result = hook(user_message='what restaurants are nearby?', platform='cli', is_first_turn=True)
+            result = hook(
+                user_message='what restaurants are nearby?',
+                platform='cli',
+                is_first_turn=True,
+                now='2026-04-20T00:10:00Z',
+            )
         finally:
             if previous_cwd is None:
                 os.environ.pop('TERMINAL_CWD', None)
