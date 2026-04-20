@@ -98,3 +98,70 @@ def test_render_status_text_surfaces_worker_orchestration_and_waiting_result():
         assert 'Worker Orchestration: mode=dispatching, active_worker_id=worker-confirm-scope-and-acceptance-criteria-for-add-auth-middleware-wave-1, current_task_slug=confirm-scope-and-acceptance-criteria-for-add-auth-middleware' in text
         assert 'Awaiting worker result.' in text
         assert 'Execution is in progress.' not in text
+
+
+def test_build_status_payload_includes_worker_reattachment_summary_when_worker_is_recovered():
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+    status_module = _load_module('omh_status')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state['worker_orchestration'] = {
+            **state['worker_orchestration'],
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'implement-auth',
+                    'status': 'dispatching',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                }
+            },
+        }
+        state_path = workspace / '.omh' / 'state' / 'atlas-state.json'
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        payload = status_module.build_status_payload(workspace=workspace)
+
+        assert payload['worker_orchestration'] == {
+            'mode': 'dispatching',
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'implement-auth',
+        }
+        assert payload['worker_reattachment'] == {
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'implement-auth',
+            'status': 'dispatching',
+        }
+
+
+def test_render_status_text_mentions_recovered_worker_context():
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+    status_module = _load_module('omh_status')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state['worker_orchestration'] = {
+            **state['worker_orchestration'],
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'implement-auth',
+                    'status': 'dispatching',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                }
+            },
+        }
+        state_path = workspace / '.omh' / 'state' / 'atlas-state.json'
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        payload = status_module.build_status_payload(workspace=workspace)
+        text = status_module.render_status_text(payload)
+
+        assert 'Worker Reattachment: worker-live (dispatching)' in text
+        assert 'Awaiting worker result.' in text
