@@ -288,3 +288,37 @@ def test_build_status_payload_auto_polls_running_detached_worker_when_process_po
 
         assert payload['worker_supervision']['status'] == 'completed'
         assert payload['worker_orchestration']['mode'] == 'awaiting-worker-result'
+
+
+def test_render_status_text_mentions_exact_next_action_for_verify_gate():
+    plan_module = _load_module('omh_plan')
+    status_module = _load_module('omh_status')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_path = workspace / '.omh' / 'state' / 'atlas-state.json'
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-01-01T00:00:00Z',
+            'updated_at': '2026-01-01T00:00:00Z',
+            'status': 'active',
+            'current_stage': 'verify',
+            'current_wave': 3,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'completed'}},
+            'worker_orchestration': {},
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        payload = status_module.build_status_payload(workspace=workspace)
+        text = status_module.render_status_text(payload)
+
+        assert 'Continuation Enforcement: strict' in text
+        assert 'Next Action: Run `omh-verify <pass|fail> [summary...]`' in text

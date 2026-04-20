@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .atlas_state import AtlasStateSnapshot, get_workspace_root, read_atlas_state
+from .continuation_enforcement import ContinuationEnforcement, build_continuation_enforcement
 from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervision
 from .task_sessions import summarize_task_sessions
 from .worker_orchestration import (
@@ -49,6 +50,7 @@ def build_status_payload(workspace: Path | None = None, *, process_poller: Proce
     worker_orchestration = normalize_worker_orchestration(state.get('worker_orchestration') or {})
     worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
     worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
+    continuation_enforcement: ContinuationEnforcement = build_continuation_enforcement(snapshot)
 
     plan_name = state.get('plan_name') or (active_plan_path.stem if active_plan_path else None)
 
@@ -78,6 +80,13 @@ def build_status_payload(workspace: Path | None = None, *, process_poller: Proce
         },
         'worker_reattachment': worker_reattachment,
         'worker_supervision': worker_supervision,
+        'continuation_enforcement': {
+            'active': continuation_enforcement.active,
+            'strict': continuation_enforcement.strict,
+            'route': continuation_enforcement.route,
+            'reason': continuation_enforcement.reason,
+            'next_action': continuation_enforcement.next_action,
+        },
         'active_task_slugs': list(snapshot.active_task_slugs),
         'worktree': {
             'path': str(worktree_path) if worktree_path else None,
@@ -157,6 +166,15 @@ def _format_worker_supervision(payload: Dict[str, Any]) -> str | None:
     return f'Worker Supervision: detached session {session_id} ({status})'
 
 
+def _format_continuation_enforcement(payload: Dict[str, Any]) -> tuple[str | None, str | None]:
+    enforcement = payload.get('continuation_enforcement') or {}
+    if not enforcement.get('active'):
+        return None, None
+    level = 'strict' if enforcement.get('strict') else 'soft'
+    next_action = enforcement.get('next_action')
+    return f'Continuation Enforcement: {level}', f'Next Action: {next_action}' if next_action else None
+
+
 def _worker_activity_message(payload: Dict[str, Any]) -> str:
     worker_supervision = payload.get('worker_supervision') or {}
     if worker_supervision.get('detached') and worker_supervision.get('status') == 'running':
@@ -184,6 +202,7 @@ def render_status_text(payload: Dict[str, Any]) -> str:
     worker_summary = _format_worker_orchestration(payload)
     worker_reattachment = _format_worker_reattachment(payload)
     worker_supervision = _format_worker_supervision(payload)
+    enforcement_level, next_action = _format_continuation_enforcement(payload)
     active_worker_id = worker_orchestration.get('active_worker_id')
 
     if posture == 'idle':
@@ -219,6 +238,10 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append(worker_reattachment)
         if worker_supervision:
             lines.append(worker_supervision)
+        if enforcement_level:
+            lines.append(enforcement_level)
+        if next_action:
+            lines.append(next_action)
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
@@ -252,6 +275,10 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append(worker_reattachment)
         if worker_supervision:
             lines.append(worker_supervision)
+        if enforcement_level:
+            lines.append(enforcement_level)
+        if next_action:
+            lines.append(next_action)
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',

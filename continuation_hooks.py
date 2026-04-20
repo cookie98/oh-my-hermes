@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .atlas_state import AtlasStateSnapshot
+from .continuation_enforcement import build_continuation_enforcement
 from .worker_orchestration import build_worker_reattachment_summary, build_worker_supervision_summary
 
 _CONTINUATION_WORD_RE = re.compile(r'\b(?:continue|resume|keep going|next task|next step)\b', re.IGNORECASE)
@@ -111,6 +112,7 @@ def build_continuation_context(snapshot: AtlasStateSnapshot) -> str:
     progress = _format_progress(snapshot)
     worker_reattachment = build_worker_reattachment_summary((snapshot.state or {}).get('worker_orchestration') or {})
     worker_supervision = build_worker_supervision_summary((snapshot.state or {}).get('worker_orchestration') or {})
+    continuation_enforcement = build_continuation_enforcement(snapshot)
 
     lines = [
         'OMH continuation reminder.',
@@ -132,6 +134,11 @@ def build_continuation_context(snapshot: AtlasStateSnapshot) -> str:
         lines.extend([
             f'Detached Worker Session: {worker_supervision.get("session_id")}',
             f'Detached Worker Status: {worker_supervision.get("status") or "unknown"}',
+        ])
+    if continuation_enforcement.active:
+        lines.extend([
+            f'Continuation Enforcement: {"strict" if continuation_enforcement.strict else "soft"}',
+            f'Next Action: {continuation_enforcement.next_action}',
         ])
     lines.append('Continue from the current OMH execution state instead of restarting the workflow.')
     return '\n'.join(lines)

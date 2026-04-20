@@ -354,3 +354,22 @@ def test_pre_llm_call_does_not_auto_poll_for_unrelated_turns_even_when_callback_
 
         assert result is None
         assert ctx.poll_calls == []
+
+
+def test_build_continuation_context_mentions_next_action_for_verify_gate():
+    atlas_state = _load_module('atlas_state')
+    module = _load_module('continuation_hooks')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_resumable_state(workspace)
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['task_sessions'] = {'keep-going': {'task_slug': 'keep-going', 'status': 'completed'}}
+        raw_state['current_stage'] = 'verify'
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        snapshot = atlas_state.read_atlas_state(workspace=workspace)
+        context = module.build_continuation_context(snapshot)
+
+        assert 'Continuation Enforcement: strict' in context
+        assert 'Next Action: Run `omh-verify <pass|fail> [summary...]`' in context

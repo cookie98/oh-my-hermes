@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .atlas_state import get_workspace_root
+from .continuation_enforcement import build_continuation_enforcement
 from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervision
 from .worker_orchestration import build_worker_reattachment_summary, build_worker_supervision_summary
 
@@ -59,6 +60,7 @@ def build_resume_payload(raw_args: str, *, workspace: Path | None = None, proces
     state_path = _write_state(root, state)
     worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
     worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
+    continuation_enforcement = build_continuation_enforcement(snapshot)
 
     plan_name = state.get('plan_name') or Path(str(state.get('active_plan'))).stem
     return {
@@ -77,6 +79,13 @@ def build_resume_payload(raw_args: str, *, workspace: Path | None = None, proces
         },
         'worker_reattachment': worker_reattachment,
         'worker_supervision': worker_supervision,
+        'continuation_enforcement': {
+            'active': continuation_enforcement.active,
+            'strict': continuation_enforcement.strict,
+            'route': continuation_enforcement.route,
+            'reason': continuation_enforcement.reason,
+            'next_action': continuation_enforcement.next_action,
+        },
         'active_task_slugs': list(snapshot.active_task_slugs),
     }
 
@@ -105,6 +114,12 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
     if worker_supervision.get('session_id'):
         supervision_session_line = f'Detached Worker Session: {worker_supervision.get("session_id")}\n'
         supervision_status_line = f'Detached Worker Status: {worker_supervision.get("status") or "unknown"}\n'
+    enforcement = payload.get('continuation_enforcement') or {}
+    enforcement_line = ''
+    next_action_line = ''
+    if enforcement.get('active'):
+        enforcement_line = f'Continuation Enforcement: {"strict" if enforcement.get("strict") else "soft"}\n'
+        next_action_line = f'Next Action: {enforcement.get("next_action") or "Continue the current OMH execution."}\n'
     return (
         'Resuming OMH work session\n\n'
         f'Active Plan: {plan.get("name")}\n'
@@ -116,7 +131,9 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
         f'{worker_line}'
         f'{worker_status_line}'
         f'{supervision_session_line}'
-        f'{supervision_status_line}\n'
+        f'{supervision_status_line}'
+        f'{enforcement_line}'
+        f'{next_action_line}\n'
         'Continuing from the last incomplete execution state...'
     )
 
