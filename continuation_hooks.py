@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .atlas_state import AtlasStateSnapshot
+from .worker_orchestration import build_worker_reattachment_summary
 
 _CONTINUATION_WORD_RE = re.compile(r'\b(?:continue|resume|keep going|next task|next step)\b', re.IGNORECASE)
 _CONTINUATION_KOREAN_CUES = (
@@ -108,6 +109,7 @@ def build_continuation_context(snapshot: AtlasStateSnapshot) -> str:
     wave = _resolve_wave(snapshot)
     current_task = _resolve_current_task_slug(snapshot)
     progress = _format_progress(snapshot)
+    worker_reattachment = build_worker_reattachment_summary((snapshot.state or {}).get('worker_orchestration') or {})
 
     lines = [
         'OMH continuation reminder.',
@@ -119,6 +121,11 @@ def build_continuation_context(snapshot: AtlasStateSnapshot) -> str:
         f'Stage: {stage}',
         f'Wave: {wave}',
         f'Current Task: {current_task}',
-        'Continue from the current OMH execution state instead of restarting the workflow.',
     ])
+    if worker_reattachment and worker_reattachment.get('active_worker_id'):
+        lines.extend([
+            f'Worker Reattachment: {worker_reattachment.get("active_worker_id")}',
+            f'Worker Status: {worker_reattachment.get("status") or "unknown"}',
+        ])
+    lines.append('Continue from the current OMH execution state instead of restarting the workflow.')
     return '\n'.join(lines)
