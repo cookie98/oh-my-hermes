@@ -46,6 +46,7 @@ def build_status_payload(workspace: Path | None = None) -> Dict[str, Any]:
     plan_name = state.get('plan_name') or (active_plan_path.stem if active_plan_path else None)
 
     payload: Dict[str, Any] = {
+        'workspace': str(root),
         'state_path': str(snapshot.state_path),
         'has_state': snapshot.has_state,
         'lifecycle': snapshot.lifecycle,
@@ -129,7 +130,7 @@ def _format_worker_orchestration(payload: Dict[str, Any]) -> str:
 
 
 def render_status_text(payload: Dict[str, Any]) -> str:
-    workspace = get_workspace_root()
+    workspace = Path(str(payload.get('workspace') or get_workspace_root()))
     posture = payload.get('posture')
     lifecycle = payload.get('lifecycle') or 'none'
     plan = payload.get('plan') or {}
