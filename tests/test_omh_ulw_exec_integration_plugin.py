@@ -165,3 +165,27 @@ def test_handle_omh_ulw_command_routes_verify_stage_to_non_mutating_exec_guidanc
         assert 'omh-verify <pass|fail>' in result
         assert updated['current_stage'] == 'verify'
         assert updated['status'] == 'active'
+
+
+def test_handle_omh_ulw_command_surfaces_active_worker_waiting_for_result_in_status_view():
+    module = _load_module('omh_ulw')
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state['worker_orchestration'] = {
+            **state['worker_orchestration'],
+            'mode': 'dispatching',
+            'active_worker_id': 'worker-confirm-scope-and-acceptance-criteria-for-add-auth-middleware-wave-1',
+            'current_task_slug': 'confirm-scope-and-acceptance-criteria-for-add-auth-middleware',
+        }
+        _write_state(workspace, state)
+
+        result = module.handle_omh_ulw_command('status', ctx=None, workspace=workspace)
+
+        assert 'Worker Orchestration: mode=dispatching, active_worker_id=worker-confirm-scope-and-acceptance-criteria-for-add-auth-middleware-wave-1, current_task_slug=confirm-scope-and-acceptance-criteria-for-add-auth-middleware' in result
+        assert 'Awaiting worker result.' in result
+        assert 'Execution is in progress.' not in result
