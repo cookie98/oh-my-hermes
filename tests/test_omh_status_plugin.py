@@ -165,3 +165,86 @@ def test_render_status_text_mentions_recovered_worker_context():
 
         assert 'Worker Reattachment: worker-live (dispatching)' in text
         assert 'Awaiting worker result.' in text
+
+
+
+def test_build_status_payload_includes_worker_supervision_summary_for_detached_session():
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+    status_module = _load_module('omh_status')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state['worker_orchestration'] = {
+            **state['worker_orchestration'],
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'implement-auth',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'implement-auth',
+                    'status': 'running',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'running',
+                    },
+                }
+            },
+        }
+        state_path = workspace / '.omh' / 'state' / 'atlas-state.json'
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        payload = status_module.build_status_payload(workspace=workspace)
+
+        assert payload['worker_supervision'] == {
+            'session_id': 'proc-123',
+            'status': 'running',
+            'detached': True,
+            'last_exit_code': None,
+            'last_observation': None,
+        }
+
+
+
+def test_render_status_text_mentions_running_detached_worker_session():
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+    status_module = _load_module('omh_status')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state['worker_orchestration'] = {
+            **state['worker_orchestration'],
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'implement-auth',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'implement-auth',
+                    'status': 'running',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'running',
+                    },
+                }
+            },
+        }
+        state_path = workspace / '.omh' / 'state' / 'atlas-state.json'
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        payload = status_module.build_status_payload(workspace=workspace)
+        text = status_module.render_status_text(payload)
+
+        assert 'Worker Supervision: detached session proc-123 (running)' in text
+        assert 'Detached worker session is still running.' in text
+        assert 'Awaiting worker result.' not in text

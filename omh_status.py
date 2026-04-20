@@ -6,7 +6,11 @@ from typing import Any, Dict, List
 
 from .atlas_state import AtlasStateSnapshot, get_workspace_root, read_atlas_state
 from .task_sessions import summarize_task_sessions
-from .worker_orchestration import build_worker_reattachment_summary, normalize_worker_orchestration
+from .worker_orchestration import (
+    build_worker_reattachment_summary,
+    build_worker_supervision_summary,
+    normalize_worker_orchestration,
+)
 
 
 def _resolve_path(raw: str | None, workspace: Path) -> Path | None:
@@ -43,6 +47,7 @@ def build_status_payload(workspace: Path | None = None) -> Dict[str, Any]:
     task_session_summary = summarize_task_sessions(task_sessions)
     worker_orchestration = normalize_worker_orchestration(state.get('worker_orchestration') or {})
     worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
+    worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
 
     plan_name = state.get('plan_name') or (active_plan_path.stem if active_plan_path else None)
 
@@ -71,6 +76,7 @@ def build_status_payload(workspace: Path | None = None) -> Dict[str, Any]:
             'current_task_slug': worker_orchestration.get('current_task_slug'),
         },
         'worker_reattachment': worker_reattachment,
+        'worker_supervision': worker_supervision,
         'active_task_slugs': list(snapshot.active_task_slugs),
         'worktree': {
             'path': str(worktree_path) if worktree_path else None,
@@ -140,6 +146,26 @@ def _format_worker_reattachment(payload: Dict[str, Any]) -> str | None:
     return f'Worker Reattachment: {active_worker_id} ({status})'
 
 
+def _format_worker_supervision(payload: Dict[str, Any]) -> str | None:
+    worker_supervision = payload.get('worker_supervision') or {}
+    session_id = worker_supervision.get('session_id')
+    status = worker_supervision.get('status')
+    detached = worker_supervision.get('detached')
+    if not session_id or not status or not detached:
+        return None
+    return f'Worker Supervision: detached session {session_id} ({status})'
+
+
+def _worker_activity_message(payload: Dict[str, Any]) -> str:
+    worker_supervision = payload.get('worker_supervision') or {}
+    if worker_supervision.get('detached') and worker_supervision.get('status') == 'running':
+        return 'Detached worker session is still running.'
+    worker_orchestration = payload.get('worker_orchestration') or {}
+    if worker_orchestration.get('active_worker_id'):
+        return 'Awaiting worker result.'
+    return 'Execution is in progress.'
+
+
 def render_status_text(payload: Dict[str, Any]) -> str:
     workspace = Path(str(payload.get('workspace') or get_workspace_root()))
     posture = payload.get('posture')
@@ -156,6 +182,7 @@ def render_status_text(payload: Dict[str, Any]) -> str:
     worker_orchestration = payload.get('worker_orchestration') or {}
     worker_summary = _format_worker_orchestration(payload)
     worker_reattachment = _format_worker_reattachment(payload)
+    worker_supervision = _format_worker_supervision(payload)
     active_worker_id = worker_orchestration.get('active_worker_id')
 
     if posture == 'idle':
@@ -189,12 +216,14 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append(worker_summary)
         if worker_reattachment:
             lines.append(worker_reattachment)
+        if worker_supervision:
+            lines.append(worker_supervision)
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
             f'Updated: {updated_at}',
             '',
-            'Awaiting worker result.' if active_worker_id else 'Execution is in progress.',
+            _worker_activity_message(payload),
         ])
         return '\n'.join(lines)
 
@@ -220,12 +249,14 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append(worker_summary)
         if worker_reattachment:
             lines.append(worker_reattachment)
+        if worker_supervision:
+            lines.append(worker_supervision)
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
             f'Updated: {updated_at}',
             '',
-            'Awaiting worker result.' if active_worker_id else 'Execution is blocked and needs intervention before resume.',
+            'Detached worker session is still running.' if ((payload.get('worker_supervision') or {}).get('detached') and (payload.get('worker_supervision') or {}).get('status') == 'running') else ('Awaiting worker result.' if active_worker_id else 'Execution is blocked and needs intervention before resume.'),
         ])
         return '\n'.join(lines)
 
