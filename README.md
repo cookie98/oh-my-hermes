@@ -32,7 +32,7 @@ That means if the external Claude planning stage is flaky or unavailable, OMH sh
 
 ## Current implementation
 
-- `pre_llm_call` hook injects OMH ultrawork context
+- `pre_llm_call` injects OMH ultrawork context on explicit triggers and can inject a safe continuation reminder for resumable OMH state on greetings / explicit continuation cues
 - `/omh-ulw` slash command queues the same mode into the conversation
 - user-facing command surface now exists for:
   - `omh-plan`
@@ -52,6 +52,6 @@ That means if the external Claude planning stage is flaky or unavailable, OMH sh
 ## Still missing
 
 - background process supervision / detached worker lifecycle tracking
-- deeper continuation hooks for long-running idle sessions
+- deeper background session reattachment / polling coverage
 - more automated reattachment/polling across sessions
 - broader end-to-end policy coverage beyond the current file-backed orchestration flow
