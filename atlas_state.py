@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .task_sessions import normalize_task_sessions
+from .worker_orchestration import normalize_worker_orchestration
 
 STATE_RELATIVE_PATH = Path('.omh/state/atlas-state.json')
 PLAN_DIR_RELATIVE_PATH = Path('.omh/plans')
@@ -72,6 +73,7 @@ def _normalize_state(raw: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(state.get('task_sessions'), dict):
         state['task_sessions'] = {}
     state['task_sessions'] = normalize_task_sessions(state.get('task_sessions') or {})
+    state['worker_orchestration'] = normalize_worker_orchestration(state.get('worker_orchestration') or {})
     return state
 
 
@@ -248,7 +250,10 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
     progress = _count_checkboxes(active_plan)
     worktree_path = state.get('worktree_path')
     if isinstance(worktree_path, str) and worktree_path.strip():
-        if not Path(worktree_path).expanduser().exists():
+        resolved_worktree_path = Path(worktree_path).expanduser()
+        if not resolved_worktree_path.is_absolute():
+            resolved_worktree_path = (root / resolved_worktree_path).resolve()
+        if not resolved_worktree_path.exists():
             errors.append(f'missing worktree_path: {worktree_path}')
             return AtlasStateSnapshot(
                 workspace=root,
