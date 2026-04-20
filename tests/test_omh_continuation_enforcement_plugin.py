@@ -151,6 +151,63 @@ def test_build_continuation_enforcement_returns_status_gate_for_running_detached
         assert 'Detached worker session is still running' in decision.next_action
 
 
+def test_build_continuation_enforcement_uses_accept_action_for_ready_worker_result_bridge():
+    atlas_state = _load_module('atlas_state')
+    enforcement_module = _load_module('continuation_enforcement')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_path = _write_plan(workspace)
+        _write_state(
+            workspace,
+            {
+                'version': 1,
+                'active_plan': str(plan_path),
+                'plan_name': 'demo-plan',
+                'started_at': '2026-04-20T00:00:00Z',
+                'updated_at': '2026-04-20T00:05:00Z',
+                'status': 'active',
+                'current_stage': 'exec',
+                'current_wave': 2,
+                'session_ids': ['sess-1'],
+                'session_origins': {'sess-1': 'direct'},
+                'task_sessions': {
+                    'task-one': {'task_slug': 'task-one', 'status': 'in_progress'}
+                },
+                'worker_orchestration': {
+                    'active_worker_id': 'worker-live',
+                    'current_task_slug': 'task-one',
+                    'mode': 'awaiting-worker-result',
+                    'worker_sessions': {
+                        'worker-live': {
+                            'worker_id': 'worker-live',
+                            'task_slug': 'task-one',
+                            'status': 'running',
+                            'mode': 'awaiting-worker-result',
+                            'updated_at': '2026-04-20T00:05:00Z',
+                            'supervision': {
+                                'detached': True,
+                                'session_id': 'proc-123',
+                                'status': 'completed',
+                                'last_exit_code': 0,
+                                'last_observation': 'process exited cleanly',
+                            },
+                        }
+                    },
+                },
+                'last_handoff': None,
+            },
+        )
+
+        snapshot = atlas_state.read_atlas_state(workspace=workspace)
+        decision = enforcement_module.build_continuation_enforcement(snapshot)
+
+        assert decision.strict is True
+        assert decision.route == 'omh-exec'
+        assert 'omh-exec accept' in decision.next_action
+
+
+
 def test_build_idle_continuation_pressure_marks_soft_resumable_state_due_after_threshold():
     atlas_state = _load_module('atlas_state')
     enforcement_module = _load_module('continuation_enforcement')

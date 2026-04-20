@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .atlas_state import AtlasStateSnapshot
-from .worker_orchestration import build_worker_supervision_summary
+from .worker_orchestration import build_worker_result_bridge, build_worker_supervision_summary
 
 DEFAULT_SOFT_IDLE_THRESHOLD_MINUTES = 60
 DEFAULT_STRICT_IDLE_THRESHOLD_MINUTES = 15
@@ -92,6 +92,17 @@ def build_continuation_enforcement(snapshot: AtlasStateSnapshot) -> Continuation
 
     worker_mode = str(((state.get('worker_orchestration') or {}).get('mode')) or '').strip().lower()
     if worker_mode == 'awaiting-worker-result':
+        worker_result_bridge = build_worker_result_bridge(state.get('worker_orchestration') or {})
+        if worker_result_bridge:
+            recommended_action = worker_result_bridge.get('recommended_action') or 'accept'
+            summary = worker_result_bridge.get('summary') or 'detached worker result is ready'
+            return ContinuationEnforcement(
+                active=True,
+                strict=True,
+                route='omh-exec',
+                reason='worker result bridge is ready and must be resolved before unrelated work',
+                next_action=f'Run `omh-exec accept` to adopt the detached worker result before starting unrelated work (recommended: {recommended_action}; summary: {summary}).',
+            )
         return ContinuationEnforcement(
             active=True,
             strict=True,
