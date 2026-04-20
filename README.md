@@ -46,12 +46,11 @@ That means if the external Claude planning stage is flaky or unavailable, OMH sh
 - `route_resolver.py` maps intent + workspace state to OMH internal routes, including the fallback research lane
 - `research_lane.py` fans out research requests into deterministic explore/librarian/oracle specialist prompts
 - `atlas_state.py` inspects `.omh/state/atlas-state.json`, `.omh/plans/`, and execution artifacts
-- v1 worker orchestration now exists: worker dispatch state, worker handoff files, worker result recording, and file-backed reattachment summaries across status/resume/continuation are all implemented
+- v1 worker orchestration now exists: worker dispatch state, worker handoff files, worker result recording, file-backed reattachment summaries across status/resume/continuation, and detached worker supervision metadata are all implemented
 - plugin skill registration for `oh-my-hermes:sisyphus-orchestrator`
 
 ## Still missing
 
-- background process supervision / detached worker lifecycle tracking
 - deeper background session reattachment / polling coverage beyond file-backed worker metadata
 - more automated polling across sessions
 - broader end-to-end policy coverage beyond the current file-backed orchestration flow
