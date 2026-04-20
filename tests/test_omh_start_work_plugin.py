@@ -84,6 +84,13 @@ def test_handle_omh_start_work_bootstraps_state_from_single_canonical_plan():
         assert first_task['status'] == 'in_progress'
         assert first_task['wave'] == 1
         assert first_task['started_at'] == state['started_at']
+        assert state['worker_orchestration'] == {
+            'active_worker_id': None,
+            'current_task_slug': None,
+            'mode': 'idle',
+            'backend': 'hermes-native',
+            'worker_sessions': {},
+        }
 
 
 def test_handle_omh_start_work_resumes_matching_active_state():

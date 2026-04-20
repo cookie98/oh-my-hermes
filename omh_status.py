@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from .atlas_state import AtlasStateSnapshot, get_workspace_root, read_atlas_state
 from .task_sessions import summarize_task_sessions
+from .worker_orchestration import normalize_worker_orchestration
 
 
 def _resolve_path(raw: str | None, workspace: Path) -> Path | None:
@@ -40,10 +41,12 @@ def build_status_payload(workspace: Path | None = None) -> Dict[str, Any]:
     session_origins = state.get('session_origins') if isinstance(state.get('session_origins'), dict) else {}
     task_sessions = state.get('task_sessions') if isinstance(state.get('task_sessions'), dict) else {}
     task_session_summary = summarize_task_sessions(task_sessions)
+    worker_orchestration = normalize_worker_orchestration(state.get('worker_orchestration') or {})
 
     plan_name = state.get('plan_name') or (active_plan_path.stem if active_plan_path else None)
 
     payload: Dict[str, Any] = {
+        'workspace': str(root),
         'state_path': str(snapshot.state_path),
         'has_state': snapshot.has_state,
         'lifecycle': snapshot.lifecycle,
@@ -61,6 +64,11 @@ def build_status_payload(workspace: Path | None = None) -> Dict[str, Any]:
             'origins': _origin_counts(session_origins),
         },
         'task_sessions': task_session_summary,
+        'worker_orchestration': {
+            'mode': worker_orchestration.get('mode'),
+            'active_worker_id': worker_orchestration.get('active_worker_id'),
+            'current_task_slug': worker_orchestration.get('current_task_slug'),
+        },
         'active_task_slugs': list(snapshot.active_task_slugs),
         'worktree': {
             'path': str(worktree_path) if worktree_path else None,
@@ -109,8 +117,20 @@ def _display_handoff(payload: Dict[str, Any]) -> str:
     return handoff.get('path') or 'none'
 
 
+def _format_worker_orchestration(payload: Dict[str, Any]) -> str:
+    worker_orchestration = payload.get('worker_orchestration') or {}
+    mode = worker_orchestration.get('mode') or 'idle'
+    active_worker_id = worker_orchestration.get('active_worker_id') or 'none'
+    current_task_slug = worker_orchestration.get('current_task_slug') or 'none'
+    return (
+        f'Worker Orchestration: mode={mode}, '
+        f'active_worker_id={active_worker_id}, '
+        f'current_task_slug={current_task_slug}'
+    )
+
+
 def render_status_text(payload: Dict[str, Any]) -> str:
-    workspace = get_workspace_root()
+    workspace = Path(str(payload.get('workspace') or get_workspace_root()))
     posture = payload.get('posture')
     lifecycle = payload.get('lifecycle') or 'none'
     plan = payload.get('plan') or {}
@@ -122,6 +142,9 @@ def render_status_text(payload: Dict[str, Any]) -> str:
     handoff = _display_handoff(payload)
     stage = payload.get('stage') or 'unknown'
     wave = payload.get('wave') if payload.get('wave') is not None else 'unknown'
+    worker_orchestration = payload.get('worker_orchestration') or {}
+    worker_summary = _format_worker_orchestration(payload)
+    active_worker_id = worker_orchestration.get('active_worker_id')
 
     if posture == 'idle':
         return (
@@ -131,40 +154,64 @@ def render_status_text(payload: Dict[str, Any]) -> str:
         )
 
     if posture == 'active':
-        return (
-            'OMH Execution Status\n\n'
-            f'Plan: {plan_name}\n'
-            f'Lifecycle: {lifecycle}\n'
-            f'Posture: {posture}\n'
-            f'Resumable: {"yes" if payload.get("resumable") else "no"}\n'
-            f'Progress: {progress}\n'
-            f'Stage: {stage}\n'
-            f'Wave: {wave}\n'
-            f'Sessions: {(payload.get("sessions") or {}).get("count", 0)}\n'
-            f'Task Sessions: {(payload.get("task_sessions") or {}).get("count", 0)}\n'
-            f'Active Tasks: {active_tasks}\n'
-            f'Worktree: {worktree}\n'
-            f'Last Handoff: {handoff}\n'
-            f'Updated: {updated_at}\n\n'
-            'Execution is in progress.'
+        show_worker = bool(
+            active_worker_id
+            or (worker_orchestration.get('mode') and worker_orchestration.get('mode') != 'idle')
+            or worker_orchestration.get('current_task_slug')
         )
+        lines = [
+            'OMH Execution Status',
+            '',
+            f'Plan: {plan_name}',
+            f'Lifecycle: {lifecycle}',
+            f'Posture: {posture}',
+            f'Resumable: {"yes" if payload.get("resumable") else "no"}',
+            f'Progress: {progress}',
+            f'Stage: {stage}',
+            f'Wave: {wave}',
+            f'Sessions: {(payload.get("sessions") or {}).get("count", 0)}',
+            f'Task Sessions: {(payload.get("task_sessions") or {}).get("count", 0)}',
+            f'Active Tasks: {active_tasks}',
+        ]
+        if show_worker:
+            lines.append(worker_summary)
+        lines.extend([
+            f'Worktree: {worktree}',
+            f'Last Handoff: {handoff}',
+            f'Updated: {updated_at}',
+            '',
+            'Awaiting worker result.' if active_worker_id else 'Execution is in progress.',
+        ])
+        return '\n'.join(lines)
 
     if posture == 'blocked':
-        return (
-            'OMH Execution Status\n\n'
-            f'Plan: {plan_name}\n'
-            f'Lifecycle: {lifecycle}\n'
-            f'Posture: {posture}\n'
-            f'Resumable: {"yes" if payload.get("resumable") else "no"}\n'
-            f'Progress: {progress}\n'
-            f'Stage: {stage}\n'
-            f'Wave: {wave}\n'
-            f'Active Tasks: {active_tasks}\n'
-            f'Worktree: {worktree}\n'
-            f'Last Handoff: {handoff}\n'
-            f'Updated: {updated_at}\n\n'
-            'Execution is blocked and needs intervention before resume.'
+        show_worker = bool(
+            active_worker_id
+            or (worker_orchestration.get('mode') and worker_orchestration.get('mode') != 'idle')
+            or worker_orchestration.get('current_task_slug')
         )
+        lines = [
+            'OMH Execution Status',
+            '',
+            f'Plan: {plan_name}',
+            f'Lifecycle: {lifecycle}',
+            f'Posture: {posture}',
+            f'Resumable: {"yes" if payload.get("resumable") else "no"}',
+            f'Progress: {progress}',
+            f'Stage: {stage}',
+            f'Wave: {wave}',
+            f'Active Tasks: {active_tasks}',
+        ]
+        if show_worker:
+            lines.append(worker_summary)
+        lines.extend([
+            f'Worktree: {worktree}',
+            f'Last Handoff: {handoff}',
+            f'Updated: {updated_at}',
+            '',
+            'Awaiting worker result.' if active_worker_id else 'Execution is blocked and needs intervention before resume.',
+        ])
+        return '\n'.join(lines)
 
     if posture == 'stale':
         issue = (payload.get('errors') or payload.get('warnings') or ['lifecycle-progress-mismatch'])[0]

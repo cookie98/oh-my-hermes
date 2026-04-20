@@ -195,6 +195,56 @@ def test_handle_omh_exec_command_returns_non_mutating_guidance_for_exec_stage_wi
         assert updated['status'] == 'active'
 
 
+def test_handle_omh_exec_command_dispatches_exec_task_into_a_worker_lane():
+    module = _load_module('omh_exec')
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state_path = _write_state(workspace, state)
+
+        result = module.handle_omh_exec_command('run draft the worker lane handoff', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+        orchestration = updated['worker_orchestration']
+        worker_id = orchestration['active_worker_id']
+        session = orchestration['worker_sessions'][worker_id]
+
+        assert 'worker-dispatched' in result
+        assert orchestration['mode'] == 'dispatching'
+        assert orchestration['current_task_slug'] == 'confirm-scope-and-acceptance-criteria-for-add-auth-middleware'
+        assert worker_id.startswith('worker-confirm-scope-and-acceptance-criteria-for-add-auth-middleware-wave-1')
+        assert session['status'] == 'dispatching'
+        assert session['task_slug'] == 'confirm-scope-and-acceptance-criteria-for-add-auth-middleware'
+        assert Path(updated['last_handoff']).exists()
+
+
+def test_handle_omh_exec_command_refuses_duplicate_worker_dispatch_for_active_execution_state():
+    module = _load_module('omh_exec')
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state_path = _write_state(workspace, state)
+
+        first_result = module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        after_first = json.loads(state_path.read_text(encoding='utf-8'))
+
+        second_result = module.handle_omh_exec_command('run second dispatch attempt', workspace=workspace)
+        after_second = json.loads(state_path.read_text(encoding='utf-8'))
+
+        assert 'worker-dispatched' in first_result
+        assert 'already has an active worker' in second_result
+        assert after_second == after_first
+        assert after_second['worker_orchestration']['active_worker_id'] == after_first['worker_orchestration']['active_worker_id']
+        assert len(after_second['worker_orchestration']['worker_sessions']) == 1
+
+
 def test_handle_omh_exec_command_completes_current_task_and_promotes_next_pending_task():
     module = _load_module('omh_exec')
     plan_module = _load_module('omh_plan')
@@ -206,18 +256,28 @@ def test_handle_omh_exec_command_completes_current_task_and_promotes_next_pendin
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
+        dispatch_result = module.handle_omh_exec_command('run dispatched worker handoff', workspace=workspace)
+        dispatched = json.loads(state_path.read_text(encoding='utf-8'))
+        worker_id = dispatched['worker_orchestration']['active_worker_id']
+
         result = module.handle_omh_exec_command('complete scope confirmed', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
         first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
         second = updated['task_sessions']['identify-the-primary-files-modules-or-surfaces-likely-to-change']
+        session = updated['worker_orchestration']['worker_sessions'][worker_id]
 
+        assert 'worker-dispatched' in dispatch_result
         assert 'Recorded OMH exec task transition' in result
         assert 'Outcome: completed' in result
+        assert session['status'] == 'completed'
+        assert session['outcome'] == 'completed'
         assert first['status'] == 'completed'
         assert second['status'] == 'in_progress'
         assert updated['current_stage'] == 'exec'
         assert updated['current_wave'] == 2
         assert updated['status'] == 'active'
+        assert updated['worker_orchestration']['active_worker_id'] is None
+        assert updated['worker_orchestration']['mode'] == 'idle'
 
 
 def test_handle_omh_exec_command_blocks_current_task_and_marks_execution_blocked():
@@ -231,15 +291,25 @@ def test_handle_omh_exec_command_blocks_current_task_and_marks_execution_blocked
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
+        dispatch_result = module.handle_omh_exec_command('run dispatched worker handoff', workspace=workspace)
+        dispatched = json.loads(state_path.read_text(encoding='utf-8'))
+        worker_id = dispatched['worker_orchestration']['active_worker_id']
+
         result = module.handle_omh_exec_command('block waiting for requirement clarification', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
         first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
+        session = updated['worker_orchestration']['worker_sessions'][worker_id]
 
+        assert 'worker-dispatched' in dispatch_result
         assert 'Recorded OMH exec task transition' in result
         assert 'Outcome: blocked' in result
+        assert session['status'] == 'blocked'
+        assert session['outcome'] == 'blocked'
         assert first['status'] == 'blocked'
         assert updated['current_stage'] == 'exec'
         assert updated['status'] == 'blocked'
+        assert updated['worker_orchestration']['active_worker_id'] is None
+        assert updated['worker_orchestration']['mode'] == 'idle'
 
 
 def test_handle_omh_exec_command_infers_completion_from_natural_language_followup():

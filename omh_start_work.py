@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 
 from .atlas_state import discover_canonical_plans, get_workspace_root, read_atlas_state
 from .task_sessions import seed_task_sessions
+from .worker_orchestration import normalize_worker_orchestration
 
 _HEADING_RE = re.compile(r'^##\s+')
 _UNCHECKED_TASK_RE = re.compile(r'^- \[ \]\s*(.+?)\s*$')
@@ -121,6 +122,7 @@ def _build_initial_state(*, workspace: Path, plan_path: Path, plan_name: str, wo
         'session_origins': {},
         'worktree_path': worktree_path,
         'task_sessions': task_sessions,
+        'worker_orchestration': normalize_worker_orchestration({}),
         'last_handoff': None,
         'notepad_dir': str(_notepad_dir(workspace, plan_name)),
     }
