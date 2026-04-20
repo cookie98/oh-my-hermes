@@ -144,6 +144,8 @@ def describe_idle_continuation_lines(
         f'Idle Age: {pressure.idle_minutes}m',
         f'Idle Threshold: {pressure.threshold_minutes}m',
     ]
+    if pressure.escalation_active:
+        lines.append('Idle Escalation: active')
     if pressure.cooldown_active:
         lines.append(f'Idle Cooldown Remaining: {pressure.cooldown_remaining_minutes}m')
     return lines

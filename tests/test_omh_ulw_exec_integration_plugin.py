@@ -275,3 +275,44 @@ def test_resolve_route_redirects_research_request_to_status_while_detached_worke
 
         assert decision.route == 'omh-status'
         assert 'detached worker session is still running' in decision.summary.lower()
+
+
+
+def test_resolve_route_redirects_research_request_to_omh_exec_after_idle_escalation():
+    plan_module = _load_module('omh_plan')
+    route_module = _load_module('route_resolver')
+    intent_module = _load_module('intent_gate')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_path = workspace / '.omh' / 'state' / 'atlas-state.json'
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-04-20T00:00:00Z',
+            'updated_at': '2026-04-20T00:00:00Z',
+            'status': 'active',
+            'current_stage': 'exec',
+            'current_wave': 2,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'in_progress'}},
+            'worker_orchestration': {},
+            'continuation_enforcement': {
+                'idle': {
+                    'last_nudged_at': '2026-04-20T03:00:00Z',
+                    'nudge_count': 2
+                }
+            },
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        decision = route_module.resolve_route(intent_module.classify_intent('investigate plugin loading path'), workspace=workspace)
+
+        assert decision.route == 'omh-exec'
+        assert 'ignored idle continuation nudges' in decision.summary.lower()

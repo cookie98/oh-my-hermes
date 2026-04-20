@@ -431,6 +431,29 @@ def test_pre_llm_call_does_not_inject_for_continuation_cues_without_resumable_st
         assert result is None
 
 
+def test_build_continuation_context_mentions_idle_escalation_when_active():
+    atlas_state = _load_module('atlas_state')
+    module = _load_module('continuation_hooks')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_resumable_state(workspace)
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['continuation_enforcement'] = {
+            'idle': {
+                'last_nudged_at': '2026-04-20T03:00:00Z',
+                'nudge_count': 2,
+            }
+        }
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        snapshot = atlas_state.read_atlas_state(workspace=workspace)
+        context = module.build_continuation_context(snapshot, now='2026-04-20T04:00:00Z')
+
+        assert 'Idle Escalation: active' in context
+
+
+
 def test_build_continuation_context_mentions_recovered_worker_hint():
     atlas_state = _load_module('atlas_state')
     module = _load_module('continuation_hooks')
