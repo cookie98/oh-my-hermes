@@ -9,6 +9,7 @@ from .omh_plan import build_plan_payload, render_plan_text
 from .omh_resume import build_resume_payload, render_resume_text
 from .omh_start_work import build_start_work_payload, render_start_work_text
 from .omh_status import build_status_payload, render_status_text
+from .research_lane import build_research_lane_payload, render_research_lane_text
 from .route_resolver import RouteDecision, resolve_route
 
 MODE_MARKER = '<oh-my-hermes-mode>'
@@ -122,16 +123,11 @@ def handle_omh_ulw_command(raw_args: str, *, ctx: Any | None = None, workspace: 
         return f'{plan_text}\n\n---\n\n{start_text}'
 
     if route.route == 'research-lane':
+        payload = build_research_lane_payload(args, workspace=workspace)
         if ctx is not None and hasattr(ctx, 'inject_message'):
-            queued = ctx.inject_message(f'omh-ulw {args}')
-            if queued:
-                return 'Queued OMH ultrawork research request into the current conversation.'
-        return (
-            'OMH Ultrawork\n\n'
-            f'Intent: {intent.intent}\n'
-            'Route: research lane\n'
-            'Mode: ultrawork\n\n'
-            'Running parallel codebase and reference research before answering...'
-        )
+            for item in payload['specialist_lanes']:
+                ctx.inject_message(item['message'])
+            return 'Queued OMH ultrawork research lanes: explore, librarian, oracle.'
+        return render_research_lane_text(payload)
 
     return f'Unhandled OMH ultrawork route: {route.route}'
