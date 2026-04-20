@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .atlas_state import get_workspace_root, read_atlas_state
-from .worker_orchestration import build_worker_reattachment_summary
+from .worker_orchestration import build_worker_reattachment_summary, build_worker_supervision_summary
 
 
 def _now_iso() -> str:
@@ -57,6 +57,7 @@ def build_resume_payload(raw_args: str, *, workspace: Path | None = None) -> Dic
     state['updated_at'] = _now_iso()
     state_path = _write_state(root, state)
     worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
+    worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
 
     plan_name = state.get('plan_name') or Path(str(state.get('active_plan'))).stem
     return {
@@ -74,6 +75,7 @@ def build_resume_payload(raw_args: str, *, workspace: Path | None = None) -> Dic
             'is_complete': snapshot.progress.is_complete if snapshot.progress else None,
         },
         'worker_reattachment': worker_reattachment,
+        'worker_supervision': worker_supervision,
         'active_task_slugs': list(snapshot.active_task_slugs),
     }
 
@@ -91,11 +93,17 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
     wave = state.get('current_wave') if state.get('current_wave') is not None else 'unknown'
     worktree = state.get('worktree_path') or str(payload.get('workspace'))
     worker_reattachment = payload.get('worker_reattachment') or {}
+    worker_supervision = payload.get('worker_supervision') or {}
     worker_line = ''
     worker_status_line = ''
+    supervision_session_line = ''
+    supervision_status_line = ''
     if worker_reattachment.get('active_worker_id'):
         worker_line = f'Worker Reattachment: {worker_reattachment.get("active_worker_id")}\n'
         worker_status_line = f'Worker Status: {worker_reattachment.get("status") or "unknown"}\n'
+    if worker_supervision.get('session_id'):
+        supervision_session_line = f'Detached Worker Session: {worker_supervision.get("session_id")}\n'
+        supervision_status_line = f'Detached Worker Status: {worker_supervision.get("status") or "unknown"}\n'
     return (
         'Resuming OMH work session\n\n'
         f'Active Plan: {plan.get("name")}\n'
@@ -105,7 +113,9 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
         f'Sessions: {len(state.get("session_ids") or [])}\n'
         f'Worktree: {worktree}\n'
         f'{worker_line}'
-        f'{worker_status_line}\n'
+        f'{worker_status_line}'
+        f'{supervision_session_line}'
+        f'{supervision_status_line}\n'
         'Continuing from the last incomplete execution state...'
     )
 

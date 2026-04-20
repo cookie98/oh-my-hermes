@@ -165,3 +165,54 @@ def test_handle_omh_resume_command_mentions_recovered_worker_context():
 
         assert 'Worker Reattachment: worker-live' in result
         assert 'Worker Status: dispatching' in result
+
+
+
+def test_render_resume_text_mentions_detached_worker_supervision():
+    plan_module = _load_module('omh_plan')
+    module = _load_module('omh_resume')
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_dir = workspace / '.omh' / 'state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / 'atlas-state.json'
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-01-01T00:00:00Z',
+            'updated_at': '2026-01-01T00:00:00Z',
+            'status': 'active',
+            'current_stage': 'exec',
+            'current_wave': 2,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'in_progress'}},
+            'worker_orchestration': {
+                'active_worker_id': 'worker-live',
+                'current_task_slug': 'implement-auth',
+                'mode': 'running',
+                'worker_sessions': {
+                    'worker-live': {
+                        'worker_id': 'worker-live',
+                        'task_slug': 'implement-auth',
+                        'status': 'running',
+                        'updated_at': '2026-04-20T00:05:00Z',
+                        'supervision': {
+                            'detached': True,
+                            'session_id': 'proc-123',
+                            'status': 'running'
+                        }
+                    }
+                }
+            },
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        result = module.handle_omh_resume_command('', workspace=workspace)
+
+        assert 'Detached Worker Session: proc-123' in result
+        assert 'Detached Worker Status: running' in result
