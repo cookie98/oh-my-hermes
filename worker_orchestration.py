@@ -25,6 +25,11 @@ _VALID_WORKER_SESSION_STATUSES = {
     'failed',
     'cancelled',
 }
+_NONTERMINAL_WORKER_SESSION_STATUSES = {
+    'dispatching',
+    'active',
+    'running',
+}
 
 _WORKER_OUTCOME_ALIASES = {
     'complete': 'completed',
@@ -58,6 +63,49 @@ def _normalize_worker_session_status(value: Any) -> str:
     if not status or status not in _VALID_WORKER_SESSION_STATUSES:
         return 'dispatch_ready'
     return status
+
+
+def _worker_session_sort_key(session: Dict[str, Any]) -> tuple[str, str]:
+    updated_at = _normalize_text(session.get('updated_at')) or ''
+    secondary = _normalize_text(session.get('dispatched_at')) or _normalize_text(session.get('started_at')) or ''
+    primary = max(updated_at, secondary)
+    return (primary, secondary)
+
+
+def _select_live_worker_session(worker_sessions: Dict[str, Dict[str, Any]]) -> Dict[str, Any] | None:
+    candidates = [
+        session
+        for session in worker_sessions.values()
+        if str(session.get('status') or '').strip().lower() in _NONTERMINAL_WORKER_SESSION_STATUSES
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=_worker_session_sort_key)
+
+
+def _reattach_active_worker(normalized: Dict[str, Any]) -> None:
+    worker_sessions = normalized.get('worker_sessions') or {}
+    active_worker_id = normalized.get('active_worker_id')
+    active_session = worker_sessions.get(active_worker_id) if active_worker_id in worker_sessions else None
+    had_terminal_active_session = False
+    if active_session is not None:
+        active_status = str(active_session.get('status') or '').strip().lower()
+        if active_status not in _NONTERMINAL_WORKER_SESSION_STATUSES:
+            active_session = None
+            had_terminal_active_session = True
+    if active_session is None:
+        active_session = _select_live_worker_session(worker_sessions)
+
+    if active_session is None:
+        if had_terminal_active_session:
+            normalized['active_worker_id'] = None
+            normalized['current_task_slug'] = None
+            normalized['mode'] = 'idle'
+        return
+
+    normalized['active_worker_id'] = active_session.get('worker_id')
+    normalized['current_task_slug'] = _normalize_text(active_session.get('task_slug'))
+    normalized['mode'] = _normalize_text(active_session.get('mode'), default=active_session.get('status')) or 'idle'
 
 
 def _slugify_worker_id(value: str | None) -> str:
@@ -123,7 +171,28 @@ def normalize_worker_orchestration(payload: Dict[str, Any] | None) -> Dict[str, 
             worker_sessions[worker_id] = session_payload
 
     normalized['worker_sessions'] = worker_sessions
+    _reattach_active_worker(normalized)
     return normalized
+
+
+def build_worker_reattachment_summary(payload: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    orchestration = normalize_worker_orchestration(payload)
+    active_worker_id = _normalize_text(orchestration.get('active_worker_id'))
+    if not active_worker_id:
+        return None
+    worker_sessions = orchestration.get('worker_sessions') or {}
+    session = worker_sessions.get(active_worker_id)
+    if not isinstance(session, dict):
+        return None
+    status = _normalize_text(session.get('status')) or _normalize_text(orchestration.get('mode')) or 'unknown'
+    if status not in _NONTERMINAL_WORKER_SESSION_STATUSES:
+        return None
+    current_task_slug = _normalize_text(orchestration.get('current_task_slug')) or _normalize_text(session.get('task_slug'))
+    return {
+        'active_worker_id': active_worker_id,
+        'current_task_slug': current_task_slug,
+        'status': status,
+    }
 
 
 def build_worker_id(state: Dict[str, Any]) -> str:

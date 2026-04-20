@@ -136,3 +136,108 @@ def test_normalize_worker_orchestration_preserves_duplicate_worker_ids():
     assert worker_sessions['worker-x']['status'] == 'active'
     assert worker_sessions['worker-x-2']['notes'] == 'second'
     assert worker_sessions['worker-x-2']['status'] == 'blocked'
+
+
+def test_normalize_worker_orchestration_infers_active_worker_from_latest_nonterminal_session():
+    orchestration_module = _load_module('worker_orchestration')
+
+    normalized = orchestration_module.normalize_worker_orchestration(
+        {
+            'mode': 'idle',
+            'worker_sessions': {
+                'worker-old': {
+                    'worker_id': 'worker-old',
+                    'task_slug': 'scope',
+                    'status': 'completed',
+                    'updated_at': '2026-04-20T00:00:00Z',
+                },
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'implement',
+                    'status': 'dispatching',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                },
+            },
+        }
+    )
+
+    assert normalized['active_worker_id'] == 'worker-live'
+    assert normalized['current_task_slug'] == 'implement'
+    assert normalized['mode'] == 'dispatching'
+
+
+def test_normalize_worker_orchestration_repairs_stale_active_worker_reference_from_live_session():
+    orchestration_module = _load_module('worker_orchestration')
+
+    normalized = orchestration_module.normalize_worker_orchestration(
+        {
+            'active_worker_id': 'missing-worker',
+            'current_task_slug': 'old-task',
+            'mode': 'dispatching',
+            'worker_sessions': {
+                'worker-ready': {
+                    'worker_id': 'worker-ready',
+                    'task_slug': 'confirm-scope',
+                    'status': 'running',
+                    'updated_at': '2026-04-20T00:06:00Z',
+                },
+            },
+        }
+    )
+
+    assert normalized['active_worker_id'] == 'worker-ready'
+    assert normalized['current_task_slug'] == 'confirm-scope'
+    assert normalized['mode'] == 'running'
+
+
+
+def test_normalize_worker_orchestration_clears_terminal_active_worker_when_no_live_session_remains():
+    orchestration_module = _load_module('worker_orchestration')
+
+    normalized = orchestration_module.normalize_worker_orchestration(
+        {
+            'active_worker_id': 'worker-done',
+            'current_task_slug': 'old-task',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-done': {
+                    'worker_id': 'worker-done',
+                    'task_slug': 'old-task',
+                    'status': 'completed',
+                    'updated_at': '2026-04-20T00:06:00Z',
+                },
+            },
+        }
+    )
+
+    assert normalized['active_worker_id'] is None
+    assert normalized['current_task_slug'] is None
+    assert normalized['mode'] == 'idle'
+
+
+
+def test_normalize_worker_orchestration_prefers_latest_live_session_with_dispatched_at_fallback():
+    orchestration_module = _load_module('worker_orchestration')
+
+    normalized = orchestration_module.normalize_worker_orchestration(
+        {
+            'worker_sessions': {
+                'worker-older': {
+                    'worker_id': 'worker-older',
+                    'task_slug': 'old-task',
+                    'status': 'dispatching',
+                    'updated_at': '2026-04-20T00:04:00Z',
+                },
+                'worker-newer': {
+                    'worker_id': 'worker-newer',
+                    'task_slug': 'new-task',
+                    'status': 'running',
+                    'dispatched_at': '2026-04-20T00:06:00Z',
+                },
+            },
+        }
+    )
+
+    assert normalized['active_worker_id'] == 'worker-newer'
+    assert normalized['current_task_slug'] == 'new-task'
+    assert normalized['mode'] == 'running'
