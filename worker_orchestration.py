@@ -255,6 +255,64 @@ def build_worker_supervision_summary(payload: Dict[str, Any] | None) -> Dict[str
     }
 
 
+
+def _build_worker_result_bridge_summary(supervision: Dict[str, Any]) -> str:
+    observation = _normalize_text(supervision.get('last_observation'))
+    if observation:
+        return observation
+
+    status = _normalize_worker_supervision_status(supervision.get('status'))
+    exit_code = supervision.get('last_exit_code') if isinstance(supervision.get('last_exit_code'), int) else None
+    if status == 'completed':
+        if exit_code in (None, 0):
+            return 'detached worker completed cleanly'
+        return f'detached worker exited with code {exit_code}'
+    if status == 'failed':
+        if exit_code is not None:
+            return f'detached worker failed with exit code {exit_code}'
+        return 'detached worker failed'
+    if status == 'lost':
+        return 'detached worker session was lost'
+    return 'detached worker is waiting for manual resolution'
+
+
+
+def build_worker_result_bridge(payload: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    orchestration = normalize_worker_orchestration(payload)
+    active_worker_id = _normalize_text(orchestration.get('active_worker_id'))
+    if not active_worker_id:
+        return None
+
+    session = (orchestration.get('worker_sessions') or {}).get(active_worker_id)
+    if not isinstance(session, dict):
+        return None
+
+    orchestration_mode = _normalize_text(orchestration.get('mode')) or 'idle'
+    session_mode = _normalize_text(session.get('mode')) or ''
+    if orchestration_mode != 'awaiting-worker-result' and session_mode != 'awaiting-worker-result':
+        return None
+
+    supervision = _normalize_worker_supervision(session.get('supervision'))
+    status = supervision.get('status')
+    if not supervision.get('detached') or status not in _TERMINAL_WORKER_SUPERVISION_STATUSES:
+        return None
+
+    exit_code = supervision.get('last_exit_code') if isinstance(supervision.get('last_exit_code'), int) else None
+    recommended_action = 'complete' if status == 'completed' and exit_code in (None, 0) else 'block'
+    summary = _build_worker_result_bridge_summary(supervision)
+    return {
+        'ready': True,
+        'worker_id': active_worker_id,
+        'task_slug': _normalize_text(session.get('task_slug')),
+        'session_id': supervision.get('session_id'),
+        'supervision_status': status,
+        'exit_code': exit_code,
+        'recommended_action': recommended_action,
+        'summary': summary,
+    }
+
+
+
 def build_worker_id(state: Dict[str, Any]) -> str:
     raw_state = state if isinstance(state, dict) else {}
     orchestration = normalize_worker_orchestration(raw_state.get('worker_orchestration') or {})

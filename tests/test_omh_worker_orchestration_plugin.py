@@ -352,6 +352,72 @@ def test_record_worker_supervision_poll_tracks_terminal_background_state_without
 
 
 
+def test_build_worker_result_bridge_recommends_complete_for_clean_completed_detached_worker():
+    orchestration_module = _load_module('worker_orchestration')
+
+    bridge = orchestration_module.build_worker_result_bridge(
+        {
+            'active_worker_id': 'worker-a',
+            'current_task_slug': 'task-a',
+            'mode': 'awaiting-worker-result',
+            'worker_sessions': {
+                'worker-a': {
+                    'worker_id': 'worker-a',
+                    'task_slug': 'task-a',
+                    'status': 'running',
+                    'mode': 'awaiting-worker-result',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'completed',
+                        'last_exit_code': 0,
+                        'last_observation': 'process exited cleanly',
+                    },
+                }
+            },
+        }
+    )
+
+    assert bridge is not None
+    assert bridge['ready'] is True
+    assert bridge['recommended_action'] == 'complete'
+    assert bridge['summary'] == 'process exited cleanly'
+    assert bridge['session_id'] == 'proc-123'
+
+
+
+def test_build_worker_result_bridge_recommends_block_for_failed_detached_worker():
+    orchestration_module = _load_module('worker_orchestration')
+
+    bridge = orchestration_module.build_worker_result_bridge(
+        {
+            'active_worker_id': 'worker-a',
+            'current_task_slug': 'task-a',
+            'mode': 'awaiting-worker-result',
+            'worker_sessions': {
+                'worker-a': {
+                    'worker_id': 'worker-a',
+                    'task_slug': 'task-a',
+                    'status': 'running',
+                    'mode': 'awaiting-worker-result',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'failed',
+                        'last_exit_code': 2,
+                    },
+                }
+            },
+        }
+    )
+
+    assert bridge is not None
+    assert bridge['ready'] is True
+    assert bridge['recommended_action'] == 'block'
+    assert 'exit code 2' in bridge['summary']
+
+
+
 def test_record_worker_supervision_poll_rejects_stale_session_after_active_worker_clears():
     orchestration_module = _load_module('worker_orchestration')
 
