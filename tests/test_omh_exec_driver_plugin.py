@@ -298,6 +298,80 @@ def test_handle_omh_exec_command_records_detached_worker_poll_update():
 
 
 
+def test_handle_omh_exec_command_accepts_ready_detached_worker_result_bridge_as_complete():
+    module = _load_module('omh_exec')
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state_path = _write_state(workspace, state)
+
+        module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
+        module.handle_omh_exec_command('poll proc-123 completed --exit-code 0 process exited cleanly', workspace=workspace)
+
+        result = module.handle_omh_exec_command('accept', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+        first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
+        second = updated['task_sessions']['identify-the-primary-files-modules-or-surfaces-likely-to-change']
+
+        assert 'Recorded OMH exec task transition' in result
+        assert 'Outcome: completed' in result
+        assert first['status'] == 'completed'
+        assert second['status'] == 'in_progress'
+
+
+
+def test_handle_omh_exec_command_accepts_failed_detached_worker_result_bridge_as_blocked():
+    module = _load_module('omh_exec')
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state_path = _write_state(workspace, state)
+
+        module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
+        module.handle_omh_exec_command('poll proc-123 failed --exit-code 2 worker crashed', workspace=workspace)
+
+        result = module.handle_omh_exec_command('accept', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+        first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
+
+        assert 'Recorded OMH exec task transition' in result
+        assert 'Outcome: blocked' in result
+        assert first['status'] == 'blocked'
+        assert updated['status'] == 'blocked'
+
+
+
+def test_handle_omh_exec_command_guides_toward_accept_when_worker_result_bridge_is_ready():
+    module = _load_module('omh_exec')
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        _write_state(workspace, state)
+
+        module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
+        module.handle_omh_exec_command('poll proc-123 completed --exit-code 0 process exited cleanly', workspace=workspace)
+
+        result = module.handle_omh_exec_command('', workspace=workspace)
+
+        assert 'omh-exec accept' in result
+
+
+
 def test_handle_omh_exec_command_rejects_supervision_poll_for_unknown_session_id():
     module = _load_module('omh_exec')
     plan_module = _load_module('omh_plan')

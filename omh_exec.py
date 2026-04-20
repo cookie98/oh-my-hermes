@@ -10,6 +10,7 @@ from .omh_verify import build_verify_payload, render_verify_text
 from .task_sessions import summarize_task_sessions, transition_task_session
 from .worker_orchestration import (
     attach_worker_supervision,
+    build_worker_result_bridge,
     dispatch_exec_worker,
     record_worker_result,
     record_worker_supervision_poll,
@@ -120,7 +121,7 @@ def _contains_hint(text: str, hints: tuple[str, ...]) -> bool:
 
 def _infer_exec_action(raw_args: str) -> Tuple[str | None, str | None]:
     action, summary = _parse_exec_action(raw_args)
-    if action in {'run', 'complete', 'block'}:
+    if action in {'run', 'complete', 'block', 'accept'}:
         return action, summary
 
     text = (raw_args or '').strip()
@@ -202,14 +203,18 @@ def build_exec_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[
     if stage == 'exec':
         task_summary = summarize_task_sessions(snapshot.state.get('task_sessions') or {})
         current_task_slug = task_summary.get('current_task_slug')
+        worker_result_bridge = build_worker_result_bridge(snapshot.state.get('worker_orchestration') or {})
         if not raw:
+            usage = 'Use `omh-exec complete [summary...]` to advance the current task, `omh-exec block [summary...]` to mark it blocked, `omh-exec run [summary...]` to dispatch it into a worker lane, `omh-exec supervise <session-id> [command...]` to attach a detached worker session, or `omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` to update detached lifecycle state.'
+            if worker_result_bridge and worker_result_bridge.get('ready'):
+                usage = 'Use `omh-exec accept` to adopt the detached worker result, `omh-exec complete [summary...]` to advance the current task, `omh-exec block [summary...]` to mark it blocked, `omh-exec run [summary...]` to dispatch it into a worker lane, `omh-exec supervise <session-id> [command...]` to attach a detached worker session, or `omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` to update detached lifecycle state.'
             return {
                 'mode': 'awaiting-exec-input',
                 'workspace': str(root),
                 'stage': stage,
                 'wave': snapshot.state.get('current_wave'),
                 'current_task_slug': current_task_slug,
-                'usage': 'Use `omh-exec complete [summary...]` to advance the current task, `omh-exec block [summary...]` to mark it blocked, `omh-exec run [summary...]` to dispatch it into a worker lane, `omh-exec supervise <session-id> [command...]` to attach a detached worker session, or `omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` to update detached lifecycle state.',
+                'usage': usage,
             }
 
         attach_session_id, attach_command = _parse_supervision_attach(raw)
@@ -260,12 +265,12 @@ def build_exec_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[
             }
 
         action, summary = _infer_exec_action(raw)
-        if action not in {'run', 'complete', 'block'}:
+        if action not in {'run', 'complete', 'block', 'accept'}:
             return {
                 'mode': 'usage',
                 'workspace': str(root),
                 'stage': stage,
-                'usage': 'Usage: `/omh-exec [run|complete|block <summary...>]`, `/omh-exec supervise <session-id> [command...]`, or `/omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` while execution is in `exec` stage.',
+                'usage': 'Usage: `/omh-exec [run|complete|block|accept <summary...>]`, `/omh-exec supervise <session-id> [command...]`, or `/omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` while execution is in `exec` stage.',
             }
         if not current_task_slug:
             return {
@@ -300,6 +305,17 @@ def build_exec_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[
                 'handoff_path': next_state.get('last_handoff'),
                 'state': next_state,
             }
+
+        if action == 'accept':
+            if not worker_result_bridge or not worker_result_bridge.get('ready'):
+                return {
+                    'mode': 'usage',
+                    'workspace': str(root),
+                    'stage': stage,
+                    'usage': 'Usage: `/omh-exec [run|complete|block|accept <summary...>]`, `/omh-exec supervise <session-id> [command...]`, or `/omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` while execution is in `exec` stage.',
+                }
+            action = str(worker_result_bridge.get('recommended_action') or '').strip().lower() or 'block'
+            summary = summary or worker_result_bridge.get('summary')
 
         next_status = 'completed' if action == 'complete' else 'blocked'
         next_state = snapshot.state
