@@ -8,6 +8,7 @@ from .atlas_state import get_state_path, get_workspace_root, read_atlas_state
 from .omh_fix import build_fix_payload, render_fix_text
 from .omh_verify import build_verify_payload, render_verify_text
 from .task_sessions import summarize_task_sessions, transition_task_session
+from .worker_orchestration import dispatch_exec_worker, record_worker_result
 
 _EXEC_COMPLETE_HINTS = (
     'complete',
@@ -114,7 +115,7 @@ def _contains_hint(text: str, hints: tuple[str, ...]) -> bool:
 
 def _infer_exec_action(raw_args: str) -> Tuple[str | None, str | None]:
     action, summary = _parse_exec_action(raw_args)
-    if action in {'complete', 'block'}:
+    if action in {'run', 'complete', 'block'}:
         return action, summary
 
     text = (raw_args or '').strip()
@@ -175,16 +176,16 @@ def build_exec_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[
                 'stage': stage,
                 'wave': snapshot.state.get('current_wave'),
                 'current_task_slug': current_task_slug,
-                'usage': 'Use `omh-exec complete [summary...]` to advance the current task, or `omh-exec block [summary...]` to mark it blocked.',
+                'usage': 'Use `omh-exec complete [summary...]` to advance the current task, `omh-exec block [summary...]` to mark it blocked, or `omh-exec run [summary...]` to dispatch it into a worker lane.',
             }
 
         action, summary = _infer_exec_action(raw)
-        if action not in {'complete', 'block'}:
+        if action not in {'run', 'complete', 'block'}:
             return {
                 'mode': 'usage',
                 'workspace': str(root),
                 'stage': stage,
-                'usage': 'Usage: `/omh-exec [complete|block <summary...>]` while execution is in `exec` stage.',
+                'usage': 'Usage: `/omh-exec [run|complete|block <summary...>]` while execution is in `exec` stage.',
             }
         if not current_task_slug:
             return {
@@ -193,9 +194,39 @@ def build_exec_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[
                 'reason': 'No current OMH task session could be determined for exec stage.',
             }
 
+        if action == 'run':
+            orchestration = snapshot.state.get('worker_orchestration') or {}
+            active_worker_id = orchestration.get('active_worker_id')
+            if active_worker_id:
+                return {
+                    'mode': 'worker-dispatch-blocked',
+                    'workspace': str(root),
+                    'stage': stage,
+                    'current_task_slug': current_task_slug,
+                    'active_worker_id': active_worker_id,
+                    'usage': 'Use `omh-exec complete ...` or `omh-exec block ...` to finish the active worker before running `omh-exec run` again.',
+                }
+            next_state = dispatch_exec_worker(snapshot.state, root, task_slug=str(current_task_slug), summary=summary)
+            state_path = _write_state(root, next_state)
+            orchestration = next_state.get('worker_orchestration') or {}
+            worker_id = orchestration.get('active_worker_id')
+            return {
+                'mode': 'worker-dispatched',
+                'workspace': str(root),
+                'state_path': str(state_path),
+                'worker_id': worker_id,
+                'task_slug': current_task_slug,
+                'summary': summary,
+                'handoff_path': next_state.get('last_handoff'),
+                'state': next_state,
+            }
+
         next_status = 'completed' if action == 'complete' else 'blocked'
+        next_state = snapshot.state
+        if (next_state.get('worker_orchestration') or {}).get('active_worker_id'):
+            next_state = record_worker_result(next_state, outcome=next_status, summary=summary)
         next_state = transition_task_session(
-            snapshot.state,
+            next_state,
             task_slug=str(current_task_slug),
             next_status=next_status,
         )
@@ -279,6 +310,23 @@ def render_exec_text(payload: Dict[str, Any]) -> str:
             f'Current Task: {payload.get("current_task_slug") or "unknown"}\n'
             f'Wave: {payload.get("wave") if payload.get("wave") is not None else "unknown"}\n\n'
             f'{payload.get("usage")}'
+        )
+
+    if mode == 'worker-dispatch-blocked':
+        return (
+            'OMH execution already has an active worker.\n\n'
+            f'Current Task: {payload.get("current_task_slug") or "unknown"}\n'
+            f'Active Worker: {payload.get("active_worker_id") or "unknown"}\n\n'
+            f'{payload.get("usage")}'
+        )
+
+    if mode == 'worker-dispatched':
+        return (
+            'Recorded OMH worker-dispatched result\n\n'
+            f'Worker: {payload.get("worker_id") or "unknown"}\n'
+            f'Task: {payload.get("task_slug") or "unknown"}\n'
+            f'Handoff: {payload.get("handoff_path") or "none"}\n'
+            f'Summary: {payload.get("summary") or "none"}'
         )
 
     if mode == 'exec-transition-recorded':
