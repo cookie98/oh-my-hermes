@@ -34,14 +34,24 @@ That means if the external Claude planning stage is flaky or unavailable, OMH sh
 
 - `pre_llm_call` hook injects OMH ultrawork context
 - `/omh-ulw` slash command queues the same mode into the conversation
+- user-facing command surface now exists for:
+  - `omh-plan`
+  - `omh-start-work`
+  - `omh-resume`
+  - `omh-status`
+  - `omh-exec`
+  - `omh-verify`
+  - `omh-fix`
 - `intent_gate.py` classifies user intent
-- `route_resolver.py` maps intent + workspace state to OMH internal routes
-- `atlas_state.py` inspects `.omh/state/atlas-state.json` and `.omh/plans/`
+- `route_resolver.py` maps intent + workspace state to OMH internal routes, including the fallback research lane
+- `atlas_state.py` inspects `.omh/state/atlas-state.json`, `.omh/plans/`, and execution artifacts
+- v1 worker orchestration now exists: worker dispatch state, worker handoff files, and worker result recording are all implemented
 - plugin skill registration for `oh-my-hermes:sisyphus-orchestrator`
 
 ## Still missing
 
-- true OMH-native `omh-plan`, `omh-start-work`, `omh-resume`, `omh-status` command implementations
-- session-idle continuation hooks comparable to Atlas backpressure
-- notepad/handoff helpers
-- richer route-aware delegation behavior
+- background process supervision / detached worker lifecycle tracking
+- richer research-lane delegation and multi-agent handoff planning
+- deeper continuation hooks for long-running idle sessions
+- more automated reattachment/polling across sessions
+- broader end-to-end policy coverage beyond the current file-backed orchestration flow
