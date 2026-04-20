@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 import yaml
 
-from .atlas_state import read_atlas_state
+from .atlas_state import get_workspace_root, read_atlas_state
 from .continuation_hooks import build_continuation_context, should_inject_continuation_context
 from .omh_exec import handle_omh_exec_command
 from .omh_fix import handle_omh_fix_command
@@ -16,6 +16,7 @@ from .omh_start_work import handle_omh_start_work_command
 from .omh_status import handle_omh_status_command
 from .omh_ulw import MODE_MARKER, ULW_MARKER, build_ulw_context, handle_omh_ulw_command, should_activate
 from .omh_verify import handle_omh_verify_command
+from .supervision_refresh import refresh_detached_worker_supervision
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,12 @@ def _normalize_platform(platform: str) -> str:
     return (platform or '').strip().lower()
 
 
-def _pre_llm_call(*, user_message: str = '', platform: str = '', is_first_turn: bool = False, **_: Any) -> Dict[str, str] | None:
+def _resolve_process_poller(ctx: Any | None):
+    candidate = getattr(ctx, 'poll_background_process', None) if ctx is not None else None
+    return candidate if callable(candidate) else None
+
+
+def _pre_llm_call_impl(*, process_poller: Any = None, user_message: str = '', platform: str = '', is_first_turn: bool = False, **_: Any) -> Dict[str, str] | None:
     config = _load_config()
     if not config.get('enabled', True):
         return None
@@ -72,6 +78,9 @@ def _pre_llm_call(*, user_message: str = '', platform: str = '', is_first_turn: 
         return None
 
     snapshot = read_atlas_state()
+    should_refresh = should_inject_continuation_context(user_message=message, is_first_turn=is_first_turn, resumable=snapshot.resumable)
+    if should_refresh and process_poller:
+        snapshot = refresh_detached_worker_supervision(get_workspace_root(), process_poller=process_poller)
     if should_inject_continuation_context(user_message=message, is_first_turn=is_first_turn, resumable=snapshot.resumable):
         return {'context': build_continuation_context(snapshot)}
 
@@ -82,6 +91,17 @@ def _pre_llm_call(*, user_message: str = '', platform: str = '', is_first_turn: 
         return None
 
     return {'context': build_ulw_context(user_message=message, config=config)}
+
+
+def _pre_llm_call(*, user_message: str = '', platform: str = '', is_first_turn: bool = False, **kwargs: Any) -> Dict[str, str] | None:
+    return _pre_llm_call_impl(user_message=user_message, platform=platform, is_first_turn=is_first_turn, **kwargs)
+
+
+def _pre_llm_call_factory(ctx: Any):
+    def _handler(*, user_message: str = '', platform: str = '', is_first_turn: bool = False, **kwargs: Any) -> Dict[str, str] | None:
+        return _pre_llm_call_impl(process_poller=_resolve_process_poller(ctx), user_message=user_message, platform=platform, is_first_turn=is_first_turn, **kwargs)
+
+    return _handler
 
 
 def _on_session_start(*, session_id: str = '', platform: str = '', **_: Any) -> None:
@@ -95,14 +115,28 @@ def _omh_ulw_command_factory(ctx: Any):
     return _handler
 
 
+def _omh_status_command_factory(ctx: Any):
+    def _handler(raw_args: str) -> str:
+        return handle_omh_status_command(raw_args, process_poller=_resolve_process_poller(ctx))
+
+    return _handler
+
+
+def _omh_resume_command_factory(ctx: Any):
+    def _handler(raw_args: str) -> str:
+        return handle_omh_resume_command(raw_args, process_poller=_resolve_process_poller(ctx))
+
+    return _handler
+
+
 def register(ctx: Any) -> None:
-    ctx.register_hook('pre_llm_call', _pre_llm_call)
+    ctx.register_hook('pre_llm_call', _pre_llm_call_factory(ctx))
     ctx.register_hook('on_session_start', _on_session_start)
     ctx.register_command('omh-plan', handle_omh_plan_command, description='Create or reuse a canonical OMH plan from raw intent. Supports `--json`.')
-    ctx.register_command('omh-resume', handle_omh_resume_command, description='Resume an existing resumable OMH execution state.')
+    ctx.register_command('omh-resume', _omh_resume_command_factory(ctx), description='Resume an existing resumable OMH execution state.')
     ctx.register_command('omh-start-work', handle_omh_start_work_command, description='Bootstrap OMH execution from a canonical plan. Supports `--json` and optional `--worktree`.')
     ctx.register_command('omh-ulw', _omh_ulw_command_factory(ctx), description='OMH ultrawork frontdoor: classify intent, route, and continue in Hermes-first mode.')
-    ctx.register_command('omh-status', handle_omh_status_command, description='Inspect OMH execution state in text mode or with `--json`.')
+    ctx.register_command('omh-status', _omh_status_command_factory(ctx), description='Inspect OMH execution state in text mode or with `--json`.')
     ctx.register_command('omh-exec', handle_omh_exec_command, description='Internal OMH exec driver: continue the current stage and route through resume/verify/fix surfaces.')
     ctx.register_command('omh-verify', handle_omh_verify_command, description='Record an internal OMH verification result via `omh-verify <pass|fail> [summary...]`.')
     ctx.register_command('omh-fix', handle_omh_fix_command, description='Record an internal OMH remediation result and re-enter verify stage.')

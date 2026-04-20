@@ -13,12 +13,18 @@ class _FakeCtx:
     def __init__(self) -> None:
         self.commands: dict[str, object] = {}
         self.hooks: dict[str, object] = {}
+        self._poll_result: dict[str, object] | None = None
+        self.poll_calls: list[str] = []
 
     def register_hook(self, name: str, handler: object) -> None:
         self.hooks[name] = handler
 
     def register_command(self, name: str, handler: object, description: str = '') -> None:
         self.commands[name] = {'handler': handler, 'description': description}
+
+    def poll_background_process(self, session_id: str):
+        self.poll_calls.append(session_id)
+        return self._poll_result
 
 
 def _load_module(module_name: str):
@@ -258,3 +264,93 @@ def test_build_continuation_context_mentions_detached_worker_supervision_hint():
 
         assert 'Detached Worker Session: proc-123' in context
         assert 'Detached Worker Status: running' in context
+
+
+def test_pre_llm_call_auto_polls_running_detached_worker_before_continuation_context():
+    module = _load_module('__init__')
+    ctx = _FakeCtx()
+    ctx._poll_result = {'status': 'completed', 'observation': 'process exited cleanly', 'exit_code': 0}
+    module.register(ctx)
+    hook = ctx.hooks['pre_llm_call']
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_resumable_state(workspace)
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['worker_orchestration'] = {
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'keep-going',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'keep-going',
+                    'status': 'running',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'running',
+                    },
+                }
+            }
+        }
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+        previous_cwd = os.environ.get('TERMINAL_CWD')
+        os.environ['TERMINAL_CWD'] = str(workspace)
+        try:
+            result = hook(user_message='continue', platform='cli', is_first_turn=False)
+        finally:
+            if previous_cwd is None:
+                os.environ.pop('TERMINAL_CWD', None)
+            else:
+                os.environ['TERMINAL_CWD'] = previous_cwd
+
+        assert result is not None
+        assert 'Detached Worker Status: completed' in result['context']
+        assert ctx.poll_calls == ['proc-123']
+
+
+
+def test_pre_llm_call_does_not_auto_poll_for_unrelated_turns_even_when_callback_exists():
+    module = _load_module('__init__')
+    ctx = _FakeCtx()
+    ctx._poll_result = {'status': 'completed'}
+    module.register(ctx)
+    hook = ctx.hooks['pre_llm_call']
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_resumable_state(workspace)
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['worker_orchestration'] = {
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'keep-going',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'keep-going',
+                    'status': 'running',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'running',
+                    },
+                }
+            }
+        }
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+        previous_cwd = os.environ.get('TERMINAL_CWD')
+        os.environ['TERMINAL_CWD'] = str(workspace)
+        try:
+            result = hook(user_message='what restaurants are nearby?', platform='cli', is_first_turn=True)
+        finally:
+            if previous_cwd is None:
+                os.environ.pop('TERMINAL_CWD', None)
+            else:
+                os.environ['TERMINAL_CWD'] = previous_cwd
+
+        assert result is None
+        assert ctx.poll_calls == []
