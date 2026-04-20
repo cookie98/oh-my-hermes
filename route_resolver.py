@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List
 
 from .atlas_state import AtlasStateSnapshot, discover_canonical_plans, read_atlas_state
+from .continuation_enforcement import build_continuation_enforcement
 from .intent_gate import IntentDecision
 
 
@@ -20,12 +21,24 @@ class RouteDecision:
 def resolve_route(intent: IntentDecision, *, workspace: Path | None = None) -> RouteDecision:
     snapshot = read_atlas_state(workspace)
     plans: List[Path] = []
+    enforcement = build_continuation_enforcement(snapshot)
 
     if intent.intent == 'status':
         return RouteDecision(
             route='omh-status',
             summary='Status intent detected; inspect OMH execution posture only.',
             next_commands=['omh-status'],
+            state_snapshot=snapshot,
+            canonical_plans=plans,
+        )
+
+    if enforcement.active and enforcement.strict:
+        forced_route = enforcement.route or 'omh-exec'
+        forced_command = 'omh-status' if forced_route == 'omh-status' else 'omh-exec'
+        return RouteDecision(
+            route=forced_route,
+            summary=f'Continuation enforcement is active; must resolve the current {snapshot.state.get("current_stage") or snapshot.posture} stage before unrelated new work. {enforcement.reason}',
+            next_commands=[forced_command],
             state_snapshot=snapshot,
             canonical_plans=plans,
         )
