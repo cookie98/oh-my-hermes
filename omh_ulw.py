@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
+from .continuation_enforcement import build_continuation_enforcement
 from .intent_gate import IntentDecision, classify_intent, extract_intent_payload
 from .omh_exec import handle_omh_exec_command
 from .omh_plan import build_plan_payload, render_plan_text
@@ -28,6 +29,7 @@ def build_ulw_context(*, user_message: str, config: Dict[str, Any], workspace: P
     intent: IntentDecision = classify_intent(user_message)
     route: RouteDecision = resolve_route(intent, workspace=workspace)
     snapshot = route.state_snapshot
+    continuation_enforcement = build_continuation_enforcement(snapshot)
 
     progress_line = 'unknown'
     if snapshot.progress is not None:
@@ -69,6 +71,10 @@ def build_ulw_context(*, user_message: str, config: Dict[str, Any], workspace: P
 
     if route.next_commands:
         lines.append('- preferred_internal_commands: ' + ' -> '.join(route.next_commands))
+
+    if continuation_enforcement.active:
+        lines.append(f'Continuation Enforcement: {"strict" if continuation_enforcement.strict else "soft"}')
+        lines.append(f'Next Action: {continuation_enforcement.next_action}')
 
     if snapshot.warnings:
         lines.append('Warnings:')
