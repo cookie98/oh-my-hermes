@@ -245,6 +245,8 @@ def test_build_idle_continuation_pressure_marks_soft_resumable_state_due_after_t
         assert decision.idle_minutes == 120
         assert decision.threshold_minutes == 60
         assert decision.cooldown_active is False
+        assert decision.nudge_count == 0
+        assert decision.escalation_active is False
 
 
 def test_build_idle_continuation_pressure_uses_shorter_threshold_for_strict_state():
@@ -282,6 +284,92 @@ def test_build_idle_continuation_pressure_uses_shorter_threshold_for_strict_stat
         assert decision.due is True
         assert decision.level == 'strict'
         assert decision.threshold_minutes == 15
+
+
+
+def test_build_idle_continuation_pressure_marks_escalation_active_after_repeated_nudges():
+    atlas_state = _load_module('atlas_state')
+    enforcement_module = _load_module('continuation_enforcement')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_path = _write_plan(workspace)
+        _write_state(
+            workspace,
+            {
+                'version': 1,
+                'active_plan': str(plan_path),
+                'plan_name': 'demo-plan',
+                'started_at': '2026-04-20T00:00:00Z',
+                'updated_at': '2026-04-20T00:00:00Z',
+                'status': 'active',
+                'current_stage': 'exec',
+                'current_wave': 2,
+                'session_ids': ['sess-1'],
+                'session_origins': {'sess-1': 'direct'},
+                'task_sessions': {
+                    'task-one': {'task_slug': 'task-one', 'status': 'in_progress'}
+                },
+                'worker_orchestration': {},
+                'continuation_enforcement': {
+                    'idle': {
+                        'last_nudged_at': '2026-04-20T03:00:00Z',
+                        'nudge_count': 2,
+                    }
+                },
+                'last_handoff': None,
+            },
+        )
+
+        snapshot = atlas_state.read_atlas_state(workspace=workspace)
+        decision = enforcement_module.build_idle_continuation_pressure(snapshot, now='2026-04-20T04:00:00Z')
+
+        assert decision.active is True
+        assert decision.nudge_count == 2
+        assert decision.escalation_active is True
+
+
+
+def test_build_continuation_enforcement_escalates_soft_exec_state_after_idle_nudge_threshold():
+    atlas_state = _load_module('atlas_state')
+    enforcement_module = _load_module('continuation_enforcement')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_path = _write_plan(workspace)
+        _write_state(
+            workspace,
+            {
+                'version': 1,
+                'active_plan': str(plan_path),
+                'plan_name': 'demo-plan',
+                'started_at': '2026-04-20T00:00:00Z',
+                'updated_at': '2026-04-20T00:00:00Z',
+                'status': 'active',
+                'current_stage': 'exec',
+                'current_wave': 2,
+                'session_ids': ['sess-1'],
+                'session_origins': {'sess-1': 'direct'},
+                'task_sessions': {
+                    'task-one': {'task_slug': 'task-one', 'status': 'in_progress'}
+                },
+                'worker_orchestration': {},
+                'continuation_enforcement': {
+                    'idle': {
+                        'last_nudged_at': '2026-04-20T03:00:00Z',
+                        'nudge_count': 2,
+                    }
+                },
+                'last_handoff': None,
+            },
+        )
+
+        snapshot = atlas_state.read_atlas_state(workspace=workspace)
+        decision = enforcement_module.build_continuation_enforcement(snapshot)
+
+        assert decision.strict is True
+        assert decision.route == 'omh-exec'
+        assert 'ignored idle continuation nudges' in decision.reason
 
 
 
