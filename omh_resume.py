@@ -9,7 +9,7 @@ from .atlas_state import get_workspace_root
 from .continuation_enforcement import build_continuation_enforcement, build_idle_continuation_pressure
 from .continuation_hooks import describe_idle_continuation_lines
 from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervision
-from .worker_orchestration import build_worker_reattachment_summary, build_worker_supervision_summary
+from .worker_orchestration import build_worker_reattachment_summary, build_worker_result_bridge, build_worker_supervision_summary
 
 
 def _now_iso() -> str:
@@ -68,6 +68,7 @@ def build_resume_payload(
     state_path = _write_state(root, state)
     worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
     worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
+    worker_result_bridge = build_worker_result_bridge(state.get('worker_orchestration') or {})
     continuation_enforcement = build_continuation_enforcement(snapshot)
     idle_pressure = build_idle_continuation_pressure(snapshot, now=now, config=config)
 
@@ -88,6 +89,7 @@ def build_resume_payload(
         },
         'worker_reattachment': worker_reattachment,
         'worker_supervision': worker_supervision,
+        'worker_result_bridge': worker_result_bridge,
         'continuation_enforcement': {
             'active': continuation_enforcement.active,
             'strict': continuation_enforcement.strict,
@@ -124,16 +126,22 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
     worktree = state.get('worktree_path') or str(payload.get('workspace'))
     worker_reattachment = payload.get('worker_reattachment') or {}
     worker_supervision = payload.get('worker_supervision') or {}
+    worker_result_bridge = payload.get('worker_result_bridge') or {}
     worker_line = ''
     worker_status_line = ''
     supervision_session_line = ''
     supervision_status_line = ''
+    worker_bridge_line = ''
+    worker_bridge_command_line = ''
     if worker_reattachment.get('active_worker_id'):
         worker_line = f'Worker Reattachment: {worker_reattachment.get("active_worker_id")}\n'
         worker_status_line = f'Worker Status: {worker_reattachment.get("status") or "unknown"}\n'
     if worker_supervision.get('session_id'):
         supervision_session_line = f'Detached Worker Session: {worker_supervision.get("session_id")}\n'
         supervision_status_line = f'Detached Worker Status: {worker_supervision.get("status") or "unknown"}\n'
+    if worker_result_bridge.get('ready'):
+        worker_bridge_line = f'Worker Result Bridge: ready (recommended={worker_result_bridge.get("recommended_action") or "unknown"})\n'
+        worker_bridge_command_line = 'Suggested Command: omh-exec accept\n'
     enforcement = payload.get('continuation_enforcement') or {}
     enforcement_line = ''
     next_action_line = ''
@@ -154,6 +162,8 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
         f'{worker_status_line}'
         f'{supervision_session_line}'
         f'{supervision_status_line}'
+        f'{worker_bridge_line}'
+        f'{worker_bridge_command_line}'
         f'{enforcement_line}'
         f'{next_action_line}'
         f'{idle_block}\n'

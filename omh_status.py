@@ -11,6 +11,7 @@ from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervis
 from .task_sessions import summarize_task_sessions
 from .worker_orchestration import (
     build_worker_reattachment_summary,
+    build_worker_result_bridge,
     build_worker_supervision_summary,
     normalize_worker_orchestration,
 )
@@ -57,6 +58,7 @@ def build_status_payload(
     worker_orchestration = normalize_worker_orchestration(state.get('worker_orchestration') or {})
     worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
     worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
+    worker_result_bridge = build_worker_result_bridge(state.get('worker_orchestration') or {})
     continuation_enforcement: ContinuationEnforcement = build_continuation_enforcement(snapshot)
     idle_pressure = build_idle_continuation_pressure(snapshot, now=now, config=config)
     idle_lines = describe_idle_continuation_lines(snapshot, now=now, config=config)
@@ -89,6 +91,7 @@ def build_status_payload(
         },
         'worker_reattachment': worker_reattachment,
         'worker_supervision': worker_supervision,
+        'worker_result_bridge': worker_result_bridge,
         'continuation_enforcement': {
             'active': continuation_enforcement.active,
             'strict': continuation_enforcement.strict,
@@ -186,6 +189,18 @@ def _format_worker_supervision(payload: Dict[str, Any]) -> str | None:
     return f'Worker Supervision: detached session {session_id} ({status})'
 
 
+
+def _format_worker_result_bridge(payload: Dict[str, Any]) -> tuple[str | None, str | None]:
+    bridge = payload.get('worker_result_bridge') or {}
+    if not bridge.get('ready'):
+        return None, None
+    return (
+        f'Worker Result Bridge: ready (recommended={bridge.get("recommended_action") or "unknown"})',
+        'Suggested Command: omh-exec accept',
+    )
+
+
+
 def _format_continuation_enforcement(payload: Dict[str, Any]) -> tuple[str | None, str | None]:
     enforcement = payload.get('continuation_enforcement') or {}
     if not enforcement.get('active'):
@@ -222,6 +237,7 @@ def render_status_text(payload: Dict[str, Any]) -> str:
     worker_summary = _format_worker_orchestration(payload)
     worker_reattachment = _format_worker_reattachment(payload)
     worker_supervision = _format_worker_supervision(payload)
+    worker_bridge_line, worker_bridge_command = _format_worker_result_bridge(payload)
     enforcement_level, next_action = _format_continuation_enforcement(payload)
     idle_lines = list(payload.get('idle_continuation_lines') or [])
     active_worker_id = worker_orchestration.get('active_worker_id')
@@ -259,6 +275,10 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append(worker_reattachment)
         if worker_supervision:
             lines.append(worker_supervision)
+        if worker_bridge_line:
+            lines.append(worker_bridge_line)
+        if worker_bridge_command:
+            lines.append(worker_bridge_command)
         if enforcement_level:
             lines.append(enforcement_level)
         if next_action:
@@ -297,6 +317,10 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append(worker_reattachment)
         if worker_supervision:
             lines.append(worker_supervision)
+        if worker_bridge_line:
+            lines.append(worker_bridge_line)
+        if worker_bridge_command:
+            lines.append(worker_bridge_command)
         if enforcement_level:
             lines.append(enforcement_level)
         if next_action:
