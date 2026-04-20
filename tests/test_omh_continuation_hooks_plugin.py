@@ -27,6 +27,63 @@ class _FakeCtx:
         return self._poll_result
 
 
+class _ProcessNamespaceBackground:
+    def __init__(self, owner: '_ProcessPollingCtx') -> None:
+        self._owner = owner
+
+    def poll_background_process(self, session_id: str):
+        self._owner.poll_calls.append(session_id)
+        return self._owner._poll_result
+
+
+class _ProcessNamespacePoll:
+    def __init__(self, owner: '_ProcessPollingCtx') -> None:
+        self._owner = owner
+
+    def poll(self, session_id: str):
+        self._owner.poll_calls.append(session_id)
+        return self._owner._poll_result
+
+
+class _ProcessManagerNamespace:
+    def __init__(self, owner: '_ProcessManagerPollingCtx') -> None:
+        self._owner = owner
+
+    def poll_background_process(self, session_id: str):
+        self._owner.poll_calls.append(session_id)
+        return self._owner._poll_result
+
+
+class _ProcessPollingCtx:
+    def __init__(self, *, use_background_name: bool) -> None:
+        self.commands: dict[str, object] = {}
+        self.hooks: dict[str, object] = {}
+        self._poll_result: dict[str, object] | None = None
+        self.poll_calls: list[str] = []
+        self.process = _ProcessNamespaceBackground(self) if use_background_name else _ProcessNamespacePoll(self)
+
+    def register_hook(self, name: str, handler: object) -> None:
+        self.hooks[name] = handler
+
+    def register_command(self, name: str, handler: object, description: str = '') -> None:
+        self.commands[name] = {'handler': handler, 'description': description}
+
+
+class _ProcessManagerPollingCtx:
+    def __init__(self) -> None:
+        self.commands: dict[str, object] = {}
+        self.hooks: dict[str, object] = {}
+        self._poll_result: dict[str, object] | None = None
+        self.poll_calls: list[str] = []
+        self.process_manager = _ProcessManagerNamespace(self)
+
+    def register_hook(self, name: str, handler: object) -> None:
+        self.hooks[name] = handler
+
+    def register_command(self, name: str, handler: object, description: str = '') -> None:
+        self.commands[name] = {'handler': handler, 'description': description}
+
+
 def _load_module(module_name: str):
     root_pkg = 'hermes_plugins'
     sub_pkg = 'hermes_plugins.oh_my_hermes'
@@ -92,6 +149,45 @@ def _write_resumable_state(workspace: Path) -> Path:
         encoding='utf-8',
     )
     return state_path
+
+
+def test_resolve_process_poller_prefers_direct_ctx_callback():
+    module = _load_module('__init__')
+    ctx = _FakeCtx()
+    ctx._poll_result = {'status': 'completed'}
+
+    poller = module._resolve_process_poller(ctx)
+
+    assert poller is not None
+    assert poller('proc-1') == {'status': 'completed'}
+    assert ctx.poll_calls == ['proc-1']
+
+
+
+def test_resolve_process_poller_falls_back_to_ctx_process_poll_method():
+    module = _load_module('__init__')
+    ctx = _ProcessPollingCtx(use_background_name=False)
+    ctx._poll_result = {'status': 'completed'}
+
+    poller = module._resolve_process_poller(ctx)
+
+    assert poller is not None
+    assert poller('proc-2') == {'status': 'completed'}
+    assert ctx.poll_calls == ['proc-2']
+
+
+
+def test_resolve_process_poller_falls_back_to_process_manager_namespace():
+    module = _load_module('__init__')
+    ctx = _ProcessManagerPollingCtx()
+    ctx._poll_result = {'status': 'failed'}
+
+    poller = module._resolve_process_poller(ctx)
+
+    assert poller is not None
+    assert poller('proc-3') == {'status': 'failed'}
+    assert ctx.poll_calls == ['proc-3']
+
 
 
 def test_is_continuation_prompt_matches_english_and_korean_cues():
@@ -441,6 +537,138 @@ def test_pre_llm_call_auto_polls_running_detached_worker_before_continuation_con
         assert result is not None
         assert 'Detached Worker Status: completed' in result['context']
         assert ctx.poll_calls == ['proc-123']
+
+
+
+def test_pre_llm_call_auto_polls_via_ctx_process_poll_fallback():
+    module = _load_module('__init__')
+    ctx = _ProcessPollingCtx(use_background_name=False)
+    ctx._poll_result = {'status': 'completed', 'observation': 'process exited cleanly', 'exit_code': 0}
+    module.register(ctx)
+    hook = ctx.hooks['pre_llm_call']
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_resumable_state(workspace)
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['worker_orchestration'] = {
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'keep-going',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'keep-going',
+                    'status': 'running',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'running',
+                    },
+                }
+            }
+        }
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+        previous_cwd = os.environ.get('TERMINAL_CWD')
+        os.environ['TERMINAL_CWD'] = str(workspace)
+        try:
+            result = hook(user_message='continue', platform='cli', is_first_turn=False)
+        finally:
+            if previous_cwd is None:
+                os.environ.pop('TERMINAL_CWD', None)
+            else:
+                os.environ['TERMINAL_CWD'] = previous_cwd
+
+        assert result is not None
+        assert 'Detached Worker Status: completed' in result['context']
+        assert ctx.poll_calls == ['proc-123']
+
+
+
+def test_status_and_resume_factories_use_runtime_fallback_pollers():
+    module = _load_module('__init__')
+    status_ctx = _ProcessManagerPollingCtx()
+    status_ctx._poll_result = {'status': 'completed', 'observation': 'process exited cleanly', 'exit_code': 0}
+    module.register(status_ctx)
+    status_handler = status_ctx.commands['omh-status']['handler']
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_resumable_state(workspace)
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['worker_orchestration'] = {
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'keep-going',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'keep-going',
+                    'status': 'running',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'running',
+                    },
+                }
+            }
+        }
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+        previous_cwd = os.environ.get('TERMINAL_CWD')
+        os.environ['TERMINAL_CWD'] = str(workspace)
+        try:
+            status_result = status_handler('')
+        finally:
+            if previous_cwd is None:
+                os.environ.pop('TERMINAL_CWD', None)
+            else:
+                os.environ['TERMINAL_CWD'] = previous_cwd
+
+        assert 'Worker Supervision: detached session proc-123 (completed)' in status_result
+        assert status_ctx.poll_calls == ['proc-123']
+
+    resume_ctx = _ProcessPollingCtx(use_background_name=True)
+    resume_ctx._poll_result = {'status': 'completed', 'observation': 'process exited cleanly', 'exit_code': 0}
+    module.register(resume_ctx)
+    resume_handler = resume_ctx.commands['omh-resume']['handler']
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_resumable_state(workspace)
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['worker_orchestration'] = {
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'keep-going',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'keep-going',
+                    'status': 'running',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'running',
+                    },
+                }
+            }
+        }
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+        previous_cwd = os.environ.get('TERMINAL_CWD')
+        os.environ['TERMINAL_CWD'] = str(workspace)
+        try:
+            resume_result = resume_handler('')
+        finally:
+            if previous_cwd is None:
+                os.environ.pop('TERMINAL_CWD', None)
+            else:
+                os.environ['TERMINAL_CWD'] = previous_cwd
+
+        assert 'Detached Worker Status: completed' in resume_result
+        assert resume_ctx.poll_calls == ['proc-123']
 
 
 

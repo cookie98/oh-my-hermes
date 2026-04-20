@@ -74,8 +74,28 @@ def _normalize_platform(platform: str) -> str:
 
 
 def _resolve_process_poller(ctx: Any | None):
-    candidate = getattr(ctx, 'poll_background_process', None) if ctx is not None else None
-    return candidate if callable(candidate) else None
+    if ctx is None:
+        return None
+
+    direct = getattr(ctx, 'poll_background_process', None)
+    if callable(direct):
+        return direct
+
+    process_ns = getattr(ctx, 'process', None)
+    process_background = getattr(process_ns, 'poll_background_process', None) if process_ns is not None else None
+    if callable(process_background):
+        return process_background
+
+    process_poll = getattr(process_ns, 'poll', None) if process_ns is not None else None
+    if callable(process_poll):
+        return process_poll
+
+    manager_ns = getattr(ctx, 'process_manager', None)
+    manager_background = getattr(manager_ns, 'poll_background_process', None) if manager_ns is not None else None
+    if callable(manager_background):
+        return manager_background
+
+    return None
 
 
 def _state_file(workspace: Path) -> Path:
