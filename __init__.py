@@ -6,6 +6,8 @@ from typing import Any, Dict
 
 import yaml
 
+from .atlas_state import read_atlas_state
+from .continuation_hooks import build_continuation_context, should_inject_continuation_context
 from .omh_exec import handle_omh_exec_command
 from .omh_fix import handle_omh_fix_command
 from .omh_plan import handle_omh_plan_command
@@ -65,11 +67,15 @@ def _pre_llm_call(*, user_message: str = '', platform: str = '', is_first_turn: 
     if enabled_platforms and normalized_platform not in enabled_platforms:
         return None
 
-    if config.get('inject_on_first_turn_only') and not is_first_turn:
-        return None
-
     message = user_message or ''
     if MODE_MARKER in message or ULW_MARKER in message:
+        return None
+
+    snapshot = read_atlas_state()
+    if should_inject_continuation_context(user_message=message, is_first_turn=is_first_turn, resumable=snapshot.resumable):
+        return {'context': build_continuation_context(snapshot)}
+
+    if config.get('inject_on_first_turn_only') and not is_first_turn:
         return None
 
     if not should_activate(message, config):
