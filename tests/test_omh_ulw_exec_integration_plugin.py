@@ -38,6 +38,7 @@ def _load_module(module_name: str):
         'omh_exec',
         'intent_gate',
         'route_resolver',
+        'research_lane',
     ]:
         full_dep = f'{sub_pkg}.{dep}'
         if full_dep not in sys.modules:

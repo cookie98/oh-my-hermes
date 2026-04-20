@@ -34,7 +34,7 @@ def _load_module(module_name: str):
         pkg.__package__ = sub_pkg
         sys.modules[sub_pkg] = pkg
 
-    for dep in ['atlas_state', 'intent_gate', 'route_resolver', 'omh_plan', 'omh_start_work', 'omh_resume', 'omh_status']:
+    for dep in ['atlas_state', 'intent_gate', 'route_resolver', 'research_lane', 'omh_plan', 'omh_start_work', 'omh_resume', 'omh_status']:
         full_dep = f'{sub_pkg}.{dep}'
         if full_dep not in sys.modules:
             dep_path = plugin_dir / f'{dep}.py'
@@ -122,6 +122,22 @@ def test_handle_omh_ulw_command_routes_investigation_to_research_lane_queue_when
         workspace = Path(tmp)
         result = module.handle_omh_ulw_command('investigate plugin loading path', ctx=ctx, workspace=workspace)
 
-        assert 'Queued OMH ultrawork research request into the current conversation.' == result
-        assert len(ctx.messages) == 1
-        assert 'omh-ulw investigate plugin loading path' in ctx.messages[0]
+        assert result == 'Queued OMH ultrawork research lanes: explore, librarian, oracle.'
+        assert ctx.messages == [
+            'omh-ulw explore investigate plugin loading path',
+            'omh-ulw librarian investigate plugin loading path',
+            'omh-ulw oracle investigate plugin loading path',
+        ]
+
+
+def test_handle_omh_ulw_command_routes_investigation_to_research_lane_summary_without_ctx():
+    module = _load_module('omh_ulw')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        result = module.handle_omh_ulw_command('investigate plugin loading path', ctx=None, workspace=workspace)
+
+        assert 'OMH Research Lane' in result
+        assert 'Request: investigate plugin loading path' in result
+        assert 'Specialist Lanes: explore, librarian, oracle' in result
+        assert 'omh-ulw explore investigate plugin loading path' in result
