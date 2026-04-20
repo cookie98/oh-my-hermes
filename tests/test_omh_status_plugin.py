@@ -248,3 +248,43 @@ def test_render_status_text_mentions_running_detached_worker_session():
         assert 'Worker Supervision: detached session proc-123 (running)' in text
         assert 'Detached worker session is still running.' in text
         assert 'Awaiting worker result.' not in text
+
+
+def test_build_status_payload_auto_polls_running_detached_worker_when_process_poller_is_available():
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+    status_module = _load_module('omh_status')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state['worker_orchestration'] = {
+            **state['worker_orchestration'],
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'implement-auth',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'implement-auth',
+                    'status': 'running',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': 'proc-123',
+                        'status': 'running',
+                    },
+                }
+            },
+        }
+        state_path = workspace / '.omh' / 'state' / 'atlas-state.json'
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        payload = status_module.build_status_payload(
+            workspace=workspace,
+            process_poller=lambda session_id: {'status': 'completed', 'observation': 'process exited cleanly', 'exit_code': 0},
+        )
+
+        assert payload['worker_supervision']['status'] == 'completed'
+        assert payload['worker_orchestration']['mode'] == 'awaiting-worker-result'

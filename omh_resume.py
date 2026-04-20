@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-from .atlas_state import get_workspace_root, read_atlas_state
+from .atlas_state import get_workspace_root
+from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervision
 from .worker_orchestration import build_worker_reattachment_summary, build_worker_supervision_summary
 
 
@@ -24,12 +25,12 @@ def _write_state(workspace: Path, state: Dict[str, Any]) -> Path:
     return state_path
 
 
-def build_resume_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[str, Any]:
+def build_resume_payload(raw_args: str, *, workspace: Path | None = None, process_poller: ProcessPoller | None = None) -> Dict[str, Any]:
     if (raw_args or '').strip():
         raise ValueError('Usage: `/omh-resume`')
 
     root = (workspace or get_workspace_root()).expanduser().resolve()
-    snapshot = read_atlas_state(root)
+    snapshot = refresh_detached_worker_supervision(root, process_poller=process_poller)
 
     if not snapshot.has_state:
         return {
@@ -120,8 +121,8 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
     )
 
 
-def handle_omh_resume_command(raw_args: str, *, workspace: Path | None = None) -> str:
+def handle_omh_resume_command(raw_args: str, *, workspace: Path | None = None, process_poller: ProcessPoller | None = None) -> str:
     if (raw_args or '').strip():
         return 'Usage: `/omh-resume`'
-    payload = build_resume_payload('', workspace=workspace)
+    payload = build_resume_payload('', workspace=workspace, process_poller=process_poller)
     return render_resume_text(payload)

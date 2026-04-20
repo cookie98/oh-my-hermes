@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .atlas_state import AtlasStateSnapshot, get_workspace_root, read_atlas_state
+from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervision
 from .task_sessions import summarize_task_sessions
 from .worker_orchestration import (
     build_worker_reattachment_summary,
@@ -32,8 +33,8 @@ def _origin_counts(session_origins: Dict[str, Any]) -> Dict[str, int]:
     return counts
 
 
-def build_status_payload(workspace: Path | None = None) -> Dict[str, Any]:
-    snapshot: AtlasStateSnapshot = read_atlas_state(workspace)
+def build_status_payload(workspace: Path | None = None, *, process_poller: ProcessPoller | None = None) -> Dict[str, Any]:
+    snapshot: AtlasStateSnapshot = refresh_detached_worker_supervision(workspace or get_workspace_root(), process_poller=process_poller)
     root = snapshot.workspace
     state = snapshot.state or {}
 
@@ -301,12 +302,12 @@ def render_status_text(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def handle_omh_status_command(raw_args: str) -> str:
+def handle_omh_status_command(raw_args: str, *, workspace: Path | None = None, process_poller: ProcessPoller | None = None) -> str:
     args = (raw_args or '').strip()
     if args and args != '--json':
         return 'Usage: `/omh-status [--json]`'
 
-    payload = build_status_payload()
+    payload = build_status_payload(workspace=workspace, process_poller=process_poller)
     if args == '--json':
         return json.dumps(payload, ensure_ascii=False, indent=2)
     return render_status_text(payload)
