@@ -207,6 +207,7 @@ def test_build_status_payload_includes_worker_supervision_summary_for_detached_s
             'detached': True,
             'last_exit_code': None,
             'last_observation': None,
+            'handle_source': 'session_id',
         }
 
 
@@ -288,6 +289,56 @@ def test_build_status_payload_auto_polls_running_detached_worker_when_process_po
 
         assert payload['worker_supervision']['status'] == 'completed'
         assert payload['worker_orchestration']['mode'] == 'awaiting-worker-result'
+
+
+
+def test_build_status_payload_auto_polls_running_detached_worker_via_runtime_handle_fallback():
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+    status_module = _load_module('omh_status')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state = start_module.build_start_work_payload('', workspace=workspace)['state']
+        state['worker_orchestration'] = {
+            **state['worker_orchestration'],
+            'active_worker_id': 'worker-live',
+            'current_task_slug': 'implement-auth',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-live': {
+                    'worker_id': 'worker-live',
+                    'task_slug': 'implement-auth',
+                    'status': 'running',
+                    'runtime_handle': 'codex-proc-9',
+                    'updated_at': '2026-04-20T00:05:00Z',
+                    'supervision': {
+                        'detached': True,
+                        'session_id': None,
+                        'status': 'running',
+                    },
+                }
+            },
+        }
+        state_path = workspace / '.omh' / 'state' / 'atlas-state.json'
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        poll_calls: list[str] = []
+        payload = status_module.build_status_payload(
+            workspace=workspace,
+            process_poller=lambda session_id: poll_calls.append(session_id) or {
+                'status': 'completed',
+                'observation': 'process exited cleanly',
+                'exit_code': 0,
+            },
+        )
+
+        assert poll_calls == ['codex-proc-9']
+        assert payload['worker_supervision']['session_id'] == 'codex-proc-9'
+        assert payload['worker_supervision']['handle_source'] == 'runtime_handle'
+        assert payload['worker_result_bridge']['ready'] is True
+
 
 
 def test_render_status_text_mentions_exact_next_action_for_verify_gate():
