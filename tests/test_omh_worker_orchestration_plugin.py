@@ -352,6 +352,81 @@ def test_record_worker_supervision_poll_tracks_terminal_background_state_without
 
 
 
+def test_build_worker_supervision_summary_falls_back_to_runtime_handle_when_session_id_is_missing():
+    orchestration_module = _load_module('worker_orchestration')
+
+    summary = orchestration_module.build_worker_supervision_summary(
+        {
+            'active_worker_id': 'worker-a',
+            'current_task_slug': 'task-a',
+            'mode': 'running',
+            'worker_sessions': {
+                'worker-a': {
+                    'worker_id': 'worker-a',
+                    'task_slug': 'task-a',
+                    'status': 'running',
+                    'runtime_handle': 'codex-proc-9',
+                    'supervision': {
+                        'detached': True,
+                        'status': 'running',
+                    },
+                }
+            },
+        }
+    )
+
+    assert summary == {
+        'session_id': 'codex-proc-9',
+        'status': 'running',
+        'detached': True,
+        'last_exit_code': None,
+        'last_observation': None,
+        'handle_source': 'runtime_handle',
+    }
+
+
+
+def test_record_worker_supervision_poll_matches_runtime_handle_when_supervision_session_id_is_missing():
+    orchestration_module = _load_module('worker_orchestration')
+
+    state = {
+        'worker_orchestration': orchestration_module.normalize_worker_orchestration(
+            {
+                'active_worker_id': 'worker-a',
+                'current_task_slug': 'task-a',
+                'mode': 'running',
+                'worker_sessions': {
+                    'worker-a': {
+                        'worker_id': 'worker-a',
+                        'task_slug': 'task-a',
+                        'status': 'running',
+                        'runtime_handle': 'codex-proc-9',
+                        'supervision': {
+                            'detached': True,
+                            'status': 'running',
+                            'command': 'codex exec ...',
+                        },
+                    }
+                },
+            }
+        )
+    }
+
+    next_state = orchestration_module.record_worker_supervision_poll(
+        state,
+        session_id='codex-proc-9',
+        status='completed',
+        observation='worker exited cleanly',
+        exit_code=0,
+    )
+    session = next_state['worker_orchestration']['worker_sessions']['worker-a']
+
+    assert session['supervision']['status'] == 'completed'
+    assert session['supervision']['last_observation'] == 'worker exited cleanly'
+    assert session['supervision']['last_exit_code'] == 0
+
+
+
 def test_build_worker_result_bridge_recommends_complete_for_clean_completed_detached_worker():
     orchestration_module = _load_module('worker_orchestration')
 

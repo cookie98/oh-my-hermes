@@ -98,6 +98,18 @@ def _normalize_worker_supervision(payload: Dict[str, Any] | None) -> Dict[str, A
     }
 
 
+def _resolve_worker_poll_handle(session: Dict[str, Any], supervision: Dict[str, Any]) -> tuple[str | None, str | None]:
+    session_id = _normalize_text(supervision.get('session_id'))
+    if session_id:
+        return session_id, 'session_id'
+
+    runtime_handle = _normalize_text(session.get('runtime_handle'))
+    if runtime_handle:
+        return runtime_handle, 'runtime_handle'
+
+    return None, None
+
+
 def _worker_session_sort_key(session: Dict[str, Any]) -> tuple[str, str]:
     updated_at = _normalize_text(session.get('updated_at')) or ''
     secondary = _normalize_text(session.get('dispatched_at')) or _normalize_text(session.get('started_at')) or ''
@@ -246,12 +258,14 @@ def build_worker_supervision_summary(payload: Dict[str, Any] | None) -> Dict[str
     supervision = _normalize_worker_supervision(session.get('supervision'))
     if supervision.get('status') == 'untracked':
         return None
+    poll_handle, handle_source = _resolve_worker_poll_handle(session, supervision)
     return {
-        'session_id': supervision.get('session_id'),
+        'session_id': poll_handle,
         'status': supervision.get('status'),
         'detached': bool(supervision.get('detached')),
         'last_exit_code': supervision.get('last_exit_code'),
         'last_observation': supervision.get('last_observation'),
+        'handle_source': handle_source,
     }
 
 
@@ -297,6 +311,7 @@ def build_worker_result_bridge(payload: Dict[str, Any] | None) -> Dict[str, Any]
     if not supervision.get('detached') or status not in _TERMINAL_WORKER_SUPERVISION_STATUSES:
         return None
 
+    poll_handle, _ = _resolve_worker_poll_handle(session, supervision)
     exit_code = supervision.get('last_exit_code') if isinstance(supervision.get('last_exit_code'), int) else None
     recommended_action = 'complete' if status == 'completed' and exit_code in (None, 0) else 'block'
     summary = _build_worker_result_bridge_summary(supervision)
@@ -304,7 +319,7 @@ def build_worker_result_bridge(payload: Dict[str, Any] | None) -> Dict[str, Any]
         'ready': True,
         'worker_id': active_worker_id,
         'task_slug': _normalize_text(session.get('task_slug')),
-        'session_id': supervision.get('session_id'),
+        'session_id': poll_handle,
         'supervision_status': status,
         'exit_code': exit_code,
         'recommended_action': recommended_action,
@@ -431,7 +446,8 @@ def record_worker_supervision_poll(
     worker_sessions = dict(orchestration.get('worker_sessions') or {})
     target_session = dict(worker_sessions.get(worker_id) or {})
     supervision = _normalize_worker_supervision(target_session.get('supervision'))
-    if supervision.get('session_id') != session_id.strip():
+    poll_handle, _ = _resolve_worker_poll_handle(target_session, supervision)
+    if poll_handle != session_id.strip():
         raise ValueError(f'No active detached OMH worker matched session id: {session_id}')
 
     normalized_status = _normalize_worker_supervision_status(status)
