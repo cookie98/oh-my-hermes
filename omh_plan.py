@@ -9,9 +9,12 @@ from .atlas_state import discover_canonical_plans, get_workspace_root
 from .intent_gate import classify_intent
 
 _SLUG_NON_ALNUM_RE = re.compile(r'[^a-z0-9]+')
+_DRAFT_BANNER = '> Draft OMH plan (Hermes-first scaffold)'
+_CANONICAL_BANNER = '> Canonical OMH plan (Hermes-first scaffold)'
+_SOURCE_INTENT_RE = re.compile(r'^\*\*Source Intent:\*\*\s*(.+?)\s*$', re.MULTILINE)
 
 
-def _parse_args(raw_args: str) -> Tuple[str, bool]:
+def _parse_args(raw_args: str) -> Tuple[str | None, str, bool]:
     tokens = (raw_args or '').strip().split()
     json_mode = False
     kept: List[str] = []
@@ -20,7 +23,13 @@ def _parse_args(raw_args: str) -> Tuple[str, bool]:
             json_mode = True
         else:
             kept.append(token)
-    return ' '.join(kept).strip(), json_mode
+
+    action: str | None = None
+    if kept and kept[0].strip().lower() == 'finalize':
+        action = 'finalize'
+        kept = kept[1:]
+
+    return action, ' '.join(kept).strip(), json_mode
 
 
 def _slugify(text: str) -> str:
@@ -37,20 +46,43 @@ def _plan_dir(workspace: Path) -> Path:
     return workspace / '.omh' / 'plans'
 
 
+def _draft_dir(workspace: Path) -> Path:
+    return workspace / '.omh' / 'drafts'
+
+
+def _plan_path_for_slug(slug: str, workspace: Path) -> Path:
+    return _plan_dir(workspace) / f'{slug}.md'
+
+
+def _draft_path_for_slug(slug: str, workspace: Path) -> Path:
+    return _draft_dir(workspace) / f'{slug}.md'
+
+
 def _plan_path_for_intent(intent: str, workspace: Path) -> Path:
-    return _plan_dir(workspace) / f'{_slugify(intent)}.md'
+    return _plan_path_for_slug(_slugify(intent), workspace)
 
 
-def _render_plan_markdown(*, intent: str, slug: str, workspace: Path) -> str:
+def _draft_path_for_intent(intent: str, workspace: Path) -> Path:
+    return _draft_path_for_slug(_slugify(intent), workspace)
+
+
+def _render_plan_markdown(*, intent: str, slug: str, workspace: Path, draft: bool) -> str:
     title = _titleize_slug(slug)
+    banner = _DRAFT_BANNER if draft else _CANONICAL_BANNER
+    planning_backend = 'Hermes-first draft scaffold' if draft else 'Hermes-first scaffold'
+    next_step_block = (
+        f'## Next Step\n\n- Run `omh-plan finalize {slug}` when this draft is ready to become the canonical OMH plan.\n'
+        if draft
+        else ''
+    )
     return f'''# {title}
 
-> Canonical OMH plan (Hermes-first scaffold)
+{banner}
 
 **Plan Name:** `{slug}`
 **Workspace:** `{workspace}`
 **Source Intent:** {intent}
-**Planning Backend:** Hermes-first scaffold
+**Planning Backend:** {planning_backend}
 
 ## Goal
 
@@ -58,7 +90,7 @@ Turn the user intent into an execution-ready canonical OMH plan without dependin
 
 ## Architecture
 
-This initial canonical plan is a deterministic scaffold. It is intentionally conservative: it captures intent, expected work lanes, and verification expectations while leaving room for later refinement by a richer planning backend.
+This initial {'draft' if draft else 'canonical'} plan is a deterministic scaffold. It is intentionally conservative: it captures intent, expected work lanes, and verification expectations while leaving room for later refinement by a richer planning backend.
 
 ## Constraints
 
@@ -114,7 +146,33 @@ This initial canonical plan is a deterministic scaffold. It is intentionally con
 - [ ] F1. Re-read the original intent and confirm every stated requirement is covered
 - [ ] F2. Verify commands/tests output supports the completion claim
 - [ ] F3. Record any remaining blockers or uncertainty explicitly
-'''
+
+{next_step_block}'''
+
+
+def _extract_source_intent(markdown: str, slug: str) -> str:
+    match = _SOURCE_INTENT_RE.search(markdown)
+    if match:
+        return match.group(1).strip()
+    return _titleize_slug(slug)
+
+
+def _match_markdown_paths(name: str, paths: List[Path]) -> List[Path]:
+    wanted = (name or '').strip().lower()
+    if not wanted:
+        return []
+    exact = [p for p in paths if p.stem.lower() == wanted]
+    if exact:
+        return exact
+    return [p for p in paths if wanted in p.stem.lower()]
+
+
+def discover_plan_drafts(workspace: Path | None = None) -> List[Path]:
+    root = (workspace or get_workspace_root()).expanduser().resolve()
+    draft_dir = _draft_dir(root)
+    if not draft_dir.exists():
+        return []
+    return sorted((p.resolve() for p in draft_dir.glob('*.md')), key=lambda p: p.name)
 
 
 def _render_plan_for_category(*, intent: str, slug: str, workspace: Path, category: str) -> str:
@@ -240,7 +298,7 @@ def _render_plan_for_category(*, intent: str, slug: str, workspace: Path, catego
 - [ ] Record unresolved risks or next actions
 '''
 
-    return _render_plan_markdown(intent=intent, slug=slug, workspace=workspace)
+    return _render_plan_markdown(intent=intent, slug=slug, workspace=workspace, draft=False)
 
 
 def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[str, Any]:
@@ -280,9 +338,104 @@ def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[st
     }
 
 
+def build_draft_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[str, Any]:
+    root = (workspace or get_workspace_root()).expanduser().resolve()
+    normalized_intent = (intent or '').strip()
+    if not normalized_intent:
+        raise ValueError('intent is required')
+
+    slug = _slugify(normalized_intent)
+    draft_dir = _draft_dir(root)
+    draft_dir.mkdir(parents=True, exist_ok=True)
+    draft_path = _draft_path_for_intent(normalized_intent, root)
+
+    created = False
+    if not draft_path.exists():
+        draft_path.write_text(
+            _render_plan_markdown(intent=normalized_intent, slug=slug, workspace=root, draft=True),
+            encoding='utf-8',
+        )
+        created = True
+
+    return {
+        'workspace': str(root),
+        'created': created,
+        'planning_backend': 'hermes-native',
+        'intent': normalized_intent,
+        'draft': {
+            'name': slug,
+            'title': _titleize_slug(slug),
+            'path': str(draft_path),
+        },
+        'draft_count': len(discover_plan_drafts(root)),
+        'canonical_plan_count': len(discover_canonical_plans(root)),
+        'next_commands': [f'omh-plan finalize {slug}', 'omh-status', 'omh-ulw'],
+    }
+
+
+def finalize_draft_plan_payload(name: str, *, workspace: Path | None = None) -> Dict[str, Any]:
+    root = (workspace or get_workspace_root()).expanduser().resolve()
+    matches = _match_markdown_paths(name, discover_plan_drafts(root))
+    if not matches:
+        raise ValueError('No OMH draft plan found to finalize')
+    if len(matches) > 1:
+        raise ValueError('Multiple OMH draft plans matched; choose one explicitly')
+
+    draft_path = matches[0]
+    slug = draft_path.stem
+    draft_content = draft_path.read_text(encoding='utf-8')
+    canonical_content = draft_content.replace(_DRAFT_BANNER, _CANONICAL_BANNER, 1)
+    intent = _extract_source_intent(draft_content, slug)
+
+    canonical_dir = _plan_dir(root)
+    canonical_dir.mkdir(parents=True, exist_ok=True)
+    canonical_path = _plan_path_for_slug(slug, root)
+    canonical_path.write_text(canonical_content, encoding='utf-8')
+    draft_path.unlink()
+
+    return {
+        'workspace': str(root),
+        'created': True,
+        'planning_backend': 'hermes-native',
+        'intent': intent,
+        'plan': {
+            'name': slug,
+            'title': _titleize_slug(slug),
+            'path': str(canonical_path),
+        },
+        'draft': {
+            'name': slug,
+            'path': str(draft_path),
+        },
+        'draft_deleted': not draft_path.exists(),
+        'canonical_plan_count': len(discover_canonical_plans(root)),
+        'next_commands': ['omh-start-work', 'omh-status', 'omh-ulw'],
+    }
+
+
+def render_draft_plan_text(payload: Dict[str, Any]) -> str:
+    created = 'yes' if payload.get('created') else 'no (reused existing draft)'
+    draft = payload.get('draft') or {}
+    return (
+        'OMH Draft Plan\n\n'
+        f'Intent: {payload.get("intent")}\n'
+        f'Draft: {draft.get("name")}\n'
+        f'Path: {draft.get("path")}\n'
+        f'Created: {created}\n'
+        f'Planning Backend: {payload.get("planning_backend")}\n'
+        f'Drafts: {payload.get("draft_count")}\n'
+        f'Canonical Plans: {payload.get("canonical_plan_count")}\n\n'
+        'Next Step:\n'
+        f'- run `omh-plan finalize {draft.get("name")}` to materialize the canonical OMH plan\n'
+        '- run `omh-status` to inspect execution posture later\n'
+        '- or use `omh-ulw <intent>` to let OMH route the workflow'
+    )
+
+
 def render_plan_text(payload: Dict[str, Any]) -> str:
     created = 'yes' if payload.get('created') else 'no (reused existing plan)'
     plan = payload.get('plan') or {}
+    draft_deleted = 'yes' if payload.get('draft_deleted') else 'no'
     return (
         'OMH Canonical Plan\n\n'
         f'Intent: {payload.get("intent")}\n'
@@ -290,7 +443,8 @@ def render_plan_text(payload: Dict[str, Any]) -> str:
         f'Path: {plan.get("path")}\n'
         f'Created: {created}\n'
         f'Planning Backend: {payload.get("planning_backend")}\n'
-        f'Canonical Plans: {payload.get("canonical_plan_count")}\n\n'
+        f'Canonical Plans: {payload.get("canonical_plan_count")}\n'
+        f'Draft cleaned up: {draft_deleted}\n\n'
         'Next Step:\n'
         '- run `omh-start-work` to bootstrap execution from this plan\n'
         '- run `omh-status` to inspect execution posture later\n'
@@ -299,11 +453,20 @@ def render_plan_text(payload: Dict[str, Any]) -> str:
 
 
 def handle_omh_plan_command(raw_args: str) -> str:
-    intent, json_mode = _parse_args(raw_args)
+    action, intent, json_mode = _parse_args(raw_args)
     if not intent:
-        return 'Usage: `/omh-plan <intent...> [--json]`'
+        return 'Usage: `/omh-plan <intent...> [--json]` or `/omh-plan finalize <plan-name> [--json]`'
 
-    payload = build_plan_payload(intent)
-    if json_mode:
-        return json.dumps(payload, ensure_ascii=False, indent=2)
-    return render_plan_text(payload)
+    try:
+        if action == 'finalize':
+            payload = finalize_draft_plan_payload(intent)
+            if json_mode:
+                return json.dumps(payload, ensure_ascii=False, indent=2)
+            return render_plan_text(payload)
+
+        payload = build_draft_plan_payload(intent)
+        if json_mode:
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+        return render_draft_plan_text(payload)
+    except ValueError as exc:
+        return str(exc)
