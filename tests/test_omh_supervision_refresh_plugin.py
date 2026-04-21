@@ -126,3 +126,34 @@ def test_refresh_detached_worker_supervision_is_noop_without_running_detached_se
         )
 
         assert refreshed.state == original_snapshot.state
+
+
+
+def test_refresh_detached_worker_supervision_polls_via_runtime_handle_when_supervision_session_id_is_missing():
+    refresh_module = _load_module('supervision_refresh')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state_path = _write_running_detached_state(workspace)
+        raw_state = json.loads(state_path.read_text(encoding='utf-8'))
+        raw_state['worker_orchestration']['worker_sessions']['worker-live']['runtime_handle'] = 'codex-proc-9'
+        raw_state['worker_orchestration']['worker_sessions']['worker-live']['supervision']['session_id'] = None
+        state_path.write_text(json.dumps(raw_state, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        poll_calls: list[str] = []
+
+        refreshed = refresh_module.refresh_detached_worker_supervision(
+            workspace,
+            process_poller=lambda session_id: poll_calls.append(session_id) or {
+                'status': 'completed',
+                'observation': 'process exited cleanly',
+                'exit_code': 0,
+            },
+        )
+        stored = json.loads(state_path.read_text(encoding='utf-8'))
+        session = stored['worker_orchestration']['worker_sessions']['worker-live']
+
+        assert poll_calls == ['codex-proc-9']
+        assert refreshed.state is not None
+        assert refreshed.state['worker_orchestration']['mode'] == 'awaiting-worker-result'
+        assert session['supervision']['status'] == 'completed'
