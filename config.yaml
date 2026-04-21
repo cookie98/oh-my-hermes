@@ -11,6 +11,11 @@ trigger_keywords:
   - omh-ulw
 inject_on_first_turn_only: false
 max_instruction_chars: 3200
+idle_continuation:
+  enabled: true
+  soft_threshold_minutes: 60
+  strict_threshold_minutes: 15
+  cooldown_minutes: 30
 planning_backend:
   preferred: hermes-native
   optional_claude_code: true

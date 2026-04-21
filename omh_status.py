@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from .atlas_state import AtlasStateSnapshot, get_workspace_root, read_atlas_state
+from .continuation_enforcement import ContinuationEnforcement, build_continuation_enforcement, build_idle_continuation_pressure
+from .continuation_hooks import describe_idle_continuation_lines
+from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervision
 from .task_sessions import summarize_task_sessions
-from .worker_orchestration import normalize_worker_orchestration
+from .worker_orchestration import (
+    build_worker_reattachment_summary,
+    build_worker_result_bridge,
+    build_worker_supervision_summary,
+    normalize_worker_orchestration,
+)
 
 
 def _resolve_path(raw: str | None, workspace: Path) -> Path | None:
@@ -28,8 +36,14 @@ def _origin_counts(session_origins: Dict[str, Any]) -> Dict[str, int]:
     return counts
 
 
-def build_status_payload(workspace: Path | None = None) -> Dict[str, Any]:
-    snapshot: AtlasStateSnapshot = read_atlas_state(workspace)
+def build_status_payload(
+    workspace: Path | None = None,
+    *,
+    process_poller: ProcessPoller | None = None,
+    now: str | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    snapshot: AtlasStateSnapshot = refresh_detached_worker_supervision(workspace or get_workspace_root(), process_poller=process_poller)
     root = snapshot.workspace
     state = snapshot.state or {}
 
@@ -42,6 +56,12 @@ def build_status_payload(workspace: Path | None = None) -> Dict[str, Any]:
     task_sessions = state.get('task_sessions') if isinstance(state.get('task_sessions'), dict) else {}
     task_session_summary = summarize_task_sessions(task_sessions)
     worker_orchestration = normalize_worker_orchestration(state.get('worker_orchestration') or {})
+    worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
+    worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
+    worker_result_bridge = build_worker_result_bridge(state.get('worker_orchestration') or {})
+    continuation_enforcement: ContinuationEnforcement = build_continuation_enforcement(snapshot)
+    idle_pressure = build_idle_continuation_pressure(snapshot, now=now, config=config)
+    idle_lines = describe_idle_continuation_lines(snapshot, now=now, config=config)
 
     plan_name = state.get('plan_name') or (active_plan_path.stem if active_plan_path else None)
 
@@ -69,6 +89,27 @@ def build_status_payload(workspace: Path | None = None) -> Dict[str, Any]:
             'active_worker_id': worker_orchestration.get('active_worker_id'),
             'current_task_slug': worker_orchestration.get('current_task_slug'),
         },
+        'worker_reattachment': worker_reattachment,
+        'worker_supervision': worker_supervision,
+        'worker_result_bridge': worker_result_bridge,
+        'continuation_enforcement': {
+            'active': continuation_enforcement.active,
+            'strict': continuation_enforcement.strict,
+            'route': continuation_enforcement.route,
+            'reason': continuation_enforcement.reason,
+            'next_action': continuation_enforcement.next_action,
+        },
+        'idle_continuation': {
+            'active': idle_pressure.active,
+            'due': idle_pressure.due,
+            'level': idle_pressure.level,
+            'idle_minutes': idle_pressure.idle_minutes,
+            'threshold_minutes': idle_pressure.threshold_minutes,
+            'cooldown_active': idle_pressure.cooldown_active,
+            'cooldown_remaining_minutes': idle_pressure.cooldown_remaining_minutes,
+            'reason': idle_pressure.reason,
+        },
+        'idle_continuation_lines': idle_lines,
         'active_task_slugs': list(snapshot.active_task_slugs),
         'worktree': {
             'path': str(worktree_path) if worktree_path else None,
@@ -129,6 +170,56 @@ def _format_worker_orchestration(payload: Dict[str, Any]) -> str:
     )
 
 
+def _format_worker_reattachment(payload: Dict[str, Any]) -> str | None:
+    worker_reattachment = payload.get('worker_reattachment') or {}
+    active_worker_id = worker_reattachment.get('active_worker_id')
+    status = worker_reattachment.get('status')
+    if not active_worker_id or not status:
+        return None
+    return f'Worker Reattachment: {active_worker_id} ({status})'
+
+
+def _format_worker_supervision(payload: Dict[str, Any]) -> str | None:
+    worker_supervision = payload.get('worker_supervision') or {}
+    session_id = worker_supervision.get('session_id')
+    status = worker_supervision.get('status')
+    detached = worker_supervision.get('detached')
+    if not session_id or not status or not detached:
+        return None
+    return f'Worker Supervision: detached session {session_id} ({status})'
+
+
+
+def _format_worker_result_bridge(payload: Dict[str, Any]) -> tuple[str | None, str | None]:
+    bridge = payload.get('worker_result_bridge') or {}
+    if not bridge.get('ready'):
+        return None, None
+    return (
+        f'Worker Result Bridge: ready (recommended={bridge.get("recommended_action") or "unknown"})',
+        'Suggested Command: omh-exec accept',
+    )
+
+
+
+def _format_continuation_enforcement(payload: Dict[str, Any]) -> tuple[str | None, str | None]:
+    enforcement = payload.get('continuation_enforcement') or {}
+    if not enforcement.get('active'):
+        return None, None
+    level = 'strict' if enforcement.get('strict') else 'soft'
+    next_action = enforcement.get('next_action')
+    return f'Continuation Enforcement: {level}', f'Next Action: {next_action}' if next_action else None
+
+
+def _worker_activity_message(payload: Dict[str, Any]) -> str:
+    worker_supervision = payload.get('worker_supervision') or {}
+    if worker_supervision.get('detached') and worker_supervision.get('status') == 'running':
+        return 'Detached worker session is still running.'
+    worker_orchestration = payload.get('worker_orchestration') or {}
+    if worker_orchestration.get('active_worker_id'):
+        return 'Awaiting worker result.'
+    return 'Execution is in progress.'
+
+
 def render_status_text(payload: Dict[str, Any]) -> str:
     workspace = Path(str(payload.get('workspace') or get_workspace_root()))
     posture = payload.get('posture')
@@ -144,6 +235,11 @@ def render_status_text(payload: Dict[str, Any]) -> str:
     wave = payload.get('wave') if payload.get('wave') is not None else 'unknown'
     worker_orchestration = payload.get('worker_orchestration') or {}
     worker_summary = _format_worker_orchestration(payload)
+    worker_reattachment = _format_worker_reattachment(payload)
+    worker_supervision = _format_worker_supervision(payload)
+    worker_bridge_line, worker_bridge_command = _format_worker_result_bridge(payload)
+    enforcement_level, next_action = _format_continuation_enforcement(payload)
+    idle_lines = list(payload.get('idle_continuation_lines') or [])
     active_worker_id = worker_orchestration.get('active_worker_id')
 
     if posture == 'idle':
@@ -175,12 +271,25 @@ def render_status_text(payload: Dict[str, Any]) -> str:
         ]
         if show_worker:
             lines.append(worker_summary)
+        if worker_reattachment:
+            lines.append(worker_reattachment)
+        if worker_supervision:
+            lines.append(worker_supervision)
+        if worker_bridge_line:
+            lines.append(worker_bridge_line)
+        if worker_bridge_command:
+            lines.append(worker_bridge_command)
+        if enforcement_level:
+            lines.append(enforcement_level)
+        if next_action:
+            lines.append(next_action)
+        lines.extend(idle_lines)
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
             f'Updated: {updated_at}',
             '',
-            'Awaiting worker result.' if active_worker_id else 'Execution is in progress.',
+            _worker_activity_message(payload),
         ])
         return '\n'.join(lines)
 
@@ -204,12 +313,25 @@ def render_status_text(payload: Dict[str, Any]) -> str:
         ]
         if show_worker:
             lines.append(worker_summary)
+        if worker_reattachment:
+            lines.append(worker_reattachment)
+        if worker_supervision:
+            lines.append(worker_supervision)
+        if worker_bridge_line:
+            lines.append(worker_bridge_line)
+        if worker_bridge_command:
+            lines.append(worker_bridge_command)
+        if enforcement_level:
+            lines.append(enforcement_level)
+        if next_action:
+            lines.append(next_action)
+        lines.extend(idle_lines)
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
             f'Updated: {updated_at}',
             '',
-            'Awaiting worker result.' if active_worker_id else 'Execution is blocked and needs intervention before resume.',
+            'Detached worker session is still running.' if ((payload.get('worker_supervision') or {}).get('detached') and (payload.get('worker_supervision') or {}).get('status') == 'running') else ('Awaiting worker result.' if active_worker_id else 'Execution is blocked and needs intervention before resume.'),
         ])
         return '\n'.join(lines)
 
@@ -254,12 +376,12 @@ def render_status_text(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def handle_omh_status_command(raw_args: str) -> str:
+def handle_omh_status_command(raw_args: str, *, workspace: Path | None = None, process_poller: ProcessPoller | None = None) -> str:
     args = (raw_args or '').strip()
     if args and args != '--json':
         return 'Usage: `/omh-status [--json]`'
 
-    payload = build_status_payload()
+    payload = build_status_payload(workspace=workspace, process_poller=process_poller)
     if args == '--json':
         return json.dumps(payload, ensure_ascii=False, indent=2)
     return render_status_text(payload)

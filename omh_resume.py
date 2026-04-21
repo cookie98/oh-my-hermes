@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
-from .atlas_state import get_workspace_root, read_atlas_state
+from .atlas_state import get_workspace_root
+from .continuation_enforcement import build_continuation_enforcement, build_idle_continuation_pressure
+from .continuation_hooks import describe_idle_continuation_lines
+from .supervision_refresh import ProcessPoller, refresh_detached_worker_supervision
+from .worker_orchestration import build_worker_reattachment_summary, build_worker_result_bridge, build_worker_supervision_summary
 
 
 def _now_iso() -> str:
@@ -23,12 +27,19 @@ def _write_state(workspace: Path, state: Dict[str, Any]) -> Path:
     return state_path
 
 
-def build_resume_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[str, Any]:
+def build_resume_payload(
+    raw_args: str,
+    *,
+    workspace: Path | None = None,
+    process_poller: ProcessPoller | None = None,
+    now: str | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     if (raw_args or '').strip():
         raise ValueError('Usage: `/omh-resume`')
 
     root = (workspace or get_workspace_root()).expanduser().resolve()
-    snapshot = read_atlas_state(root)
+    snapshot = refresh_detached_worker_supervision(root, process_poller=process_poller)
 
     if not snapshot.has_state:
         return {
@@ -55,6 +66,11 @@ def build_resume_payload(raw_args: str, *, workspace: Path | None = None) -> Dic
     state = dict(snapshot.state)
     state['updated_at'] = _now_iso()
     state_path = _write_state(root, state)
+    worker_reattachment = build_worker_reattachment_summary(state.get('worker_orchestration') or {})
+    worker_supervision = build_worker_supervision_summary(state.get('worker_orchestration') or {})
+    worker_result_bridge = build_worker_result_bridge(state.get('worker_orchestration') or {})
+    continuation_enforcement = build_continuation_enforcement(snapshot)
+    idle_pressure = build_idle_continuation_pressure(snapshot, now=now, config=config)
 
     plan_name = state.get('plan_name') or Path(str(state.get('active_plan'))).stem
     return {
@@ -71,6 +87,27 @@ def build_resume_payload(raw_args: str, *, workspace: Path | None = None) -> Dic
             'completed': snapshot.progress.completed if snapshot.progress else None,
             'is_complete': snapshot.progress.is_complete if snapshot.progress else None,
         },
+        'worker_reattachment': worker_reattachment,
+        'worker_supervision': worker_supervision,
+        'worker_result_bridge': worker_result_bridge,
+        'continuation_enforcement': {
+            'active': continuation_enforcement.active,
+            'strict': continuation_enforcement.strict,
+            'route': continuation_enforcement.route,
+            'reason': continuation_enforcement.reason,
+            'next_action': continuation_enforcement.next_action,
+        },
+        'idle_continuation': {
+            'active': idle_pressure.active,
+            'due': idle_pressure.due,
+            'level': idle_pressure.level,
+            'idle_minutes': idle_pressure.idle_minutes,
+            'threshold_minutes': idle_pressure.threshold_minutes,
+            'cooldown_active': idle_pressure.cooldown_active,
+            'cooldown_remaining_minutes': idle_pressure.cooldown_remaining_minutes,
+            'reason': idle_pressure.reason,
+        },
+        'idle_continuation_lines': describe_idle_continuation_lines(snapshot, now=now, config=config),
         'active_task_slugs': list(snapshot.active_task_slugs),
     }
 
@@ -87,6 +124,32 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
     progress_text = f'{completed}/{total}' if total is not None and completed is not None else 'unknown'
     wave = state.get('current_wave') if state.get('current_wave') is not None else 'unknown'
     worktree = state.get('worktree_path') or str(payload.get('workspace'))
+    worker_reattachment = payload.get('worker_reattachment') or {}
+    worker_supervision = payload.get('worker_supervision') or {}
+    worker_result_bridge = payload.get('worker_result_bridge') or {}
+    worker_line = ''
+    worker_status_line = ''
+    supervision_session_line = ''
+    supervision_status_line = ''
+    worker_bridge_line = ''
+    worker_bridge_command_line = ''
+    if worker_reattachment.get('active_worker_id'):
+        worker_line = f'Worker Reattachment: {worker_reattachment.get("active_worker_id")}\n'
+        worker_status_line = f'Worker Status: {worker_reattachment.get("status") or "unknown"}\n'
+    if worker_supervision.get('session_id'):
+        supervision_session_line = f'Detached Worker Session: {worker_supervision.get("session_id")}\n'
+        supervision_status_line = f'Detached Worker Status: {worker_supervision.get("status") or "unknown"}\n'
+    if worker_result_bridge.get('ready'):
+        worker_bridge_line = f'Worker Result Bridge: ready (recommended={worker_result_bridge.get("recommended_action") or "unknown"})\n'
+        worker_bridge_command_line = 'Suggested Command: omh-exec accept\n'
+    enforcement = payload.get('continuation_enforcement') or {}
+    enforcement_line = ''
+    next_action_line = ''
+    if enforcement.get('active'):
+        enforcement_line = f'Continuation Enforcement: {"strict" if enforcement.get("strict") else "soft"}\n'
+        next_action_line = f'Next Action: {enforcement.get("next_action") or "Continue the current OMH execution."}\n'
+    idle_lines = payload.get('idle_continuation_lines') or []
+    idle_block = ''.join(f'{line}\n' for line in idle_lines)
     return (
         'Resuming OMH work session\n\n'
         f'Active Plan: {plan.get("name")}\n'
@@ -94,13 +157,22 @@ def render_resume_text(payload: Dict[str, Any]) -> str:
         f'Stage: {state.get("current_stage") or "unknown"}\n'
         f'Wave: {wave}\n'
         f'Sessions: {len(state.get("session_ids") or [])}\n'
-        f'Worktree: {worktree}\n\n'
+        f'Worktree: {worktree}\n'
+        f'{worker_line}'
+        f'{worker_status_line}'
+        f'{supervision_session_line}'
+        f'{supervision_status_line}'
+        f'{worker_bridge_line}'
+        f'{worker_bridge_command_line}'
+        f'{enforcement_line}'
+        f'{next_action_line}'
+        f'{idle_block}\n'
         'Continuing from the last incomplete execution state...'
     )
 
 
-def handle_omh_resume_command(raw_args: str, *, workspace: Path | None = None) -> str:
+def handle_omh_resume_command(raw_args: str, *, workspace: Path | None = None, process_poller: ProcessPoller | None = None) -> str:
     if (raw_args or '').strip():
         return 'Usage: `/omh-resume`'
-    payload = build_resume_payload('', workspace=workspace)
+    payload = build_resume_payload('', workspace=workspace, process_poller=process_poller)
     return render_resume_text(payload)

@@ -32,7 +32,7 @@ That means if the external Claude planning stage is flaky or unavailable, OMH sh
 
 ## Current implementation
 
-- `pre_llm_call` hook injects OMH ultrawork context
+- `pre_llm_call` injects OMH ultrawork context on explicit triggers, can inject a safe continuation reminder for resumable OMH state on greetings / explicit continuation cues, and now also fires idle-time continuation pressure on unrelated first-turn re-entry once the configured idle threshold is crossed
 - `/omh-ulw` slash command queues the same mode into the conversation
 - user-facing command surface now exists for:
   - `omh-plan`
@@ -46,12 +46,11 @@ That means if the external Claude planning stage is flaky or unavailable, OMH sh
 - `route_resolver.py` maps intent + workspace state to OMH internal routes, including the fallback research lane
 - `research_lane.py` fans out research requests into deterministic explore/librarian/oracle specialist prompts
 - `atlas_state.py` inspects `.omh/state/atlas-state.json`, `.omh/plans/`, and execution artifacts
-- v1 worker orchestration now exists: worker dispatch state, worker handoff files, and worker result recording are all implemented
+- v1 worker orchestration now exists: worker dispatch state, worker handoff files, worker result recording, file-backed reattachment summaries across status/resume/continuation, detached worker supervision metadata, runtime-assisted detached session auto-refresh on status/resume/continuation entry via dedicated callbacks and common process-namespace fallbacks, detached worker result bridging with `omh-exec accept`, practical continuation enforcement with exact next-action hints, basic idle-time continuation pressure with persisted nudge cooldowns, and nudge-count-based idle escalation into stricter continuation enforcement are all implemented
 - plugin skill registration for `oh-my-hermes:sisyphus-orchestrator`
 
 ## Still missing
 
-- background process supervision / detached worker lifecycle tracking
-- deeper continuation hooks for long-running idle sessions
-- more automated reattachment/polling across sessions
-- broader end-to-end policy coverage beyond the current file-backed orchestration flow
+- deeper background session reattachment / polling coverage beyond runtime-assisted detached session refresh
+- more automated polling across sessions and runtimes beyond the current dedicated-callback and common process-namespace fallback coverage
+- broader end-to-end policy coverage beyond the current file-backed orchestration flow, including continuation loops stronger than the current idle-escalation frontdoor enforcement

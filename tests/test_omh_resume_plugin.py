@@ -123,3 +123,327 @@ def test_handle_omh_resume_command_resumes_active_state():
         assert payload['state']['current_stage'] == 'exec'
         assert payload['state']['current_wave'] == 2
         assert payload['active_task_slugs'] == ['auth-middleware']
+
+
+def test_handle_omh_resume_command_mentions_recovered_worker_context():
+    plan_module = _load_module('omh_plan')
+    module = _load_module('omh_resume')
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_dir = workspace / '.omh' / 'state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / 'atlas-state.json'
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-01-01T00:00:00Z',
+            'updated_at': '2026-01-01T00:00:00Z',
+            'status': 'active',
+            'current_stage': 'exec',
+            'current_wave': 2,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'in_progress'}},
+            'worker_orchestration': {
+                'worker_sessions': {
+                    'worker-live': {
+                        'worker_id': 'worker-live',
+                        'task_slug': 'implement-auth',
+                        'status': 'dispatching',
+                        'updated_at': '2026-04-20T00:05:00Z',
+                    }
+                }
+            },
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        result = module.handle_omh_resume_command('', workspace=workspace)
+
+        assert 'Worker Reattachment: worker-live' in result
+        assert 'Worker Status: dispatching' in result
+
+
+
+def test_render_resume_text_mentions_detached_worker_supervision():
+    plan_module = _load_module('omh_plan')
+    module = _load_module('omh_resume')
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_dir = workspace / '.omh' / 'state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / 'atlas-state.json'
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-01-01T00:00:00Z',
+            'updated_at': '2026-01-01T00:00:00Z',
+            'status': 'active',
+            'current_stage': 'exec',
+            'current_wave': 2,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'in_progress'}},
+            'worker_orchestration': {
+                'active_worker_id': 'worker-live',
+                'current_task_slug': 'implement-auth',
+                'mode': 'running',
+                'worker_sessions': {
+                    'worker-live': {
+                        'worker_id': 'worker-live',
+                        'task_slug': 'implement-auth',
+                        'status': 'running',
+                        'updated_at': '2026-04-20T00:05:00Z',
+                        'supervision': {
+                            'detached': True,
+                            'session_id': 'proc-123',
+                            'status': 'running'
+                        }
+                    }
+                }
+            },
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        result = module.handle_omh_resume_command('', workspace=workspace)
+
+        assert 'Detached Worker Session: proc-123' in result
+        assert 'Detached Worker Status: running' in result
+
+
+def test_render_resume_text_mentions_exact_next_action_for_detached_running_worker():
+    plan_module = _load_module('omh_plan')
+    module = _load_module('omh_resume')
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_dir = workspace / '.omh' / 'state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / 'atlas-state.json'
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-01-01T00:00:00Z',
+            'updated_at': '2026-01-01T00:00:00Z',
+            'status': 'active',
+            'current_stage': 'exec',
+            'current_wave': 2,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'in_progress'}},
+            'worker_orchestration': {
+                'active_worker_id': 'worker-live',
+                'current_task_slug': 'implement-auth',
+                'mode': 'running',
+                'worker_sessions': {
+                    'worker-live': {
+                        'worker_id': 'worker-live',
+                        'task_slug': 'implement-auth',
+                        'status': 'running',
+                        'updated_at': '2026-04-20T00:05:00Z',
+                        'supervision': {
+                            'detached': True,
+                            'session_id': 'proc-123',
+                            'status': 'running'
+                        }
+                    }
+                }
+            },
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        result = module.handle_omh_resume_command('', workspace=workspace)
+
+        assert 'Continuation Enforcement: strict' in result
+        assert 'Next Action: Detached worker session is still running (session: proc-123).' in result
+
+
+def test_handle_omh_resume_command_auto_polls_running_detached_worker_when_process_poller_is_available():
+    plan_module = _load_module('omh_plan')
+    module = _load_module('omh_resume')
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_dir = workspace / '.omh' / 'state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / 'atlas-state.json'
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-01-01T00:00:00Z',
+            'updated_at': '2026-01-01T00:00:00Z',
+            'status': 'active',
+            'current_stage': 'exec',
+            'current_wave': 2,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'in_progress'}},
+            'worker_orchestration': {
+                'active_worker_id': 'worker-live',
+                'current_task_slug': 'implement-auth',
+                'mode': 'running',
+                'worker_sessions': {
+                    'worker-live': {
+                        'worker_id': 'worker-live',
+                        'task_slug': 'implement-auth',
+                        'status': 'running',
+                        'updated_at': '2026-04-20T00:05:00Z',
+                        'supervision': {
+                            'detached': True,
+                            'session_id': 'proc-123',
+                            'status': 'running'
+                        }
+                    }
+                }
+            },
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        result = module.handle_omh_resume_command(
+            '',
+            workspace=workspace,
+            process_poller=lambda session_id: {'status': 'completed', 'observation': 'process exited cleanly', 'exit_code': 0},
+        )
+
+        assert 'Detached Worker Status: completed' in result
+
+
+def test_render_resume_text_surfaces_worker_result_bridge_summary():
+    plan_module = _load_module('omh_plan')
+    module = _load_module('omh_resume')
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_dir = workspace / '.omh' / 'state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / 'atlas-state.json'
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-01-01T00:00:00Z',
+            'updated_at': '2026-01-01T00:05:00Z',
+            'status': 'active',
+            'current_stage': 'exec',
+            'current_wave': 2,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'in_progress'}},
+            'worker_orchestration': {
+                'active_worker_id': 'worker-live',
+                'current_task_slug': 'implement-auth',
+                'mode': 'awaiting-worker-result',
+                'worker_sessions': {
+                    'worker-live': {
+                        'worker_id': 'worker-live',
+                        'task_slug': 'implement-auth',
+                        'status': 'running',
+                        'mode': 'awaiting-worker-result',
+                        'updated_at': '2026-04-20T00:05:00Z',
+                        'supervision': {
+                            'detached': True,
+                            'session_id': 'proc-123',
+                            'status': 'completed',
+                            'last_exit_code': 0,
+                            'last_observation': 'process exited cleanly'
+                        }
+                    }
+                }
+            },
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        result = module.handle_omh_resume_command('', workspace=workspace)
+
+        assert 'Worker Result Bridge: ready (recommended=complete)' in result
+        assert 'Suggested Command: omh-exec accept' in result
+
+
+
+def test_render_resume_text_mentions_idle_escalation_when_active():
+    plan_module = _load_module('omh_plan')
+    module = _load_module('omh_resume')
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_dir = workspace / '.omh' / 'state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / 'atlas-state.json'
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-04-20T00:00:00Z',
+            'updated_at': '2026-04-20T00:00:00Z',
+            'status': 'active',
+            'current_stage': 'exec',
+            'current_wave': 2,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'in_progress'}},
+            'worker_orchestration': {},
+            'continuation_enforcement': {
+                'idle': {
+                    'last_nudged_at': '2026-04-20T03:00:00Z',
+                    'nudge_count': 2,
+                }
+            },
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        payload = module.build_resume_payload('', workspace=workspace, now='2026-04-20T04:00:00Z')
+        text = module.render_resume_text(payload)
+
+        assert 'Idle Escalation: active' in text
+
+
+
+def test_render_resume_text_mentions_idle_continuation_status_when_due():
+    plan_module = _load_module('omh_plan')
+    module = _load_module('omh_resume')
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_payload = plan_module.build_plan_payload('add auth middleware', workspace=workspace)
+        state_dir = workspace / '.omh' / 'state'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / 'atlas-state.json'
+        state_path.write_text(json.dumps({
+            'version': 1,
+            'active_plan': plan_payload['plan']['path'],
+            'plan_name': 'add-auth-middleware',
+            'started_at': '2026-04-20T00:00:00Z',
+            'updated_at': '2026-04-20T00:00:00Z',
+            'status': 'active',
+            'current_stage': 'exec',
+            'current_wave': 2,
+            'session_ids': ['sess-a'],
+            'session_origins': {'sess-a': 'direct'},
+            'worktree_path': None,
+            'task_sessions': {'auth-middleware': {'task_slug': 'auth-middleware', 'status': 'in_progress'}},
+            'worker_orchestration': {},
+            'last_handoff': None,
+            'notepad_dir': '.omh/notepads/add-auth-middleware/'
+        }), encoding='utf-8')
+
+        payload = module.build_resume_payload('', workspace=workspace, now='2026-04-20T02:00:00Z')
+        text = module.render_resume_text(payload)
+
+        assert 'Idle Continuation: due' in text
+        assert 'Idle Age: 120m' in text

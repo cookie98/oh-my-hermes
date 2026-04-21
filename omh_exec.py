@@ -8,7 +8,13 @@ from .atlas_state import get_state_path, get_workspace_root, read_atlas_state
 from .omh_fix import build_fix_payload, render_fix_text
 from .omh_verify import build_verify_payload, render_verify_text
 from .task_sessions import summarize_task_sessions, transition_task_session
-from .worker_orchestration import dispatch_exec_worker, record_worker_result
+from .worker_orchestration import (
+    attach_worker_supervision,
+    build_worker_result_bridge,
+    dispatch_exec_worker,
+    record_worker_result,
+    record_worker_supervision_poll,
+)
 
 _EXEC_COMPLETE_HINTS = (
     'complete',
@@ -115,7 +121,7 @@ def _contains_hint(text: str, hints: tuple[str, ...]) -> bool:
 
 def _infer_exec_action(raw_args: str) -> Tuple[str | None, str | None]:
     action, summary = _parse_exec_action(raw_args)
-    if action in {'run', 'complete', 'block'}:
+    if action in {'run', 'complete', 'block', 'accept'}:
         return action, summary
 
     text = (raw_args or '').strip()
@@ -127,6 +133,34 @@ def _infer_exec_action(raw_args: str) -> Tuple[str | None, str | None]:
     if _contains_hint(text, _EXEC_COMPLETE_HINTS):
         return 'complete', text
     return None, None
+
+
+def _parse_supervision_attach(raw_args: str) -> Tuple[str | None, str | None]:
+    tokens = (raw_args or '').strip().split()
+    if len(tokens) < 2 or tokens[0].strip().lower() != 'supervise':
+        return None, None
+    session_id = tokens[1].strip() or None
+    command = ' '.join(tokens[2:]).strip() or None
+    return session_id, command
+
+
+def _parse_supervision_poll(raw_args: str) -> Tuple[str | None, str | None, str | None, int | None]:
+    tokens = (raw_args or '').strip().split()
+    if len(tokens) < 3 or tokens[0].strip().lower() != 'poll':
+        return None, None, None, None
+    session_id = tokens[1].strip() or None
+    status = tokens[2].strip().lower() or None
+    remaining = list(tokens[3:])
+    exit_code = None
+    if '--exit-code' in remaining:
+        idx = remaining.index('--exit-code')
+        if idx + 1 < len(remaining):
+            raw_exit_code = remaining[idx + 1].strip()
+            if raw_exit_code.isdigit() or (raw_exit_code.startswith('-') and raw_exit_code[1:].isdigit()):
+                exit_code = int(raw_exit_code)
+            del remaining[idx:idx + 2]
+    observation = ' '.join(remaining).strip() or None
+    return session_id, status, observation, exit_code
 
 
 def _infer_verify_outcome(raw_args: str) -> str | None:
@@ -169,23 +203,74 @@ def build_exec_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[
     if stage == 'exec':
         task_summary = summarize_task_sessions(snapshot.state.get('task_sessions') or {})
         current_task_slug = task_summary.get('current_task_slug')
+        worker_result_bridge = build_worker_result_bridge(snapshot.state.get('worker_orchestration') or {})
         if not raw:
+            usage = 'Use `omh-exec complete [summary...]` to advance the current task, `omh-exec block [summary...]` to mark it blocked, `omh-exec run [summary...]` to dispatch it into a worker lane, `omh-exec supervise <session-id> [command...]` to attach a detached worker session, or `omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` to update detached lifecycle state.'
+            if worker_result_bridge and worker_result_bridge.get('ready'):
+                usage = 'Use `omh-exec accept` to adopt the detached worker result, `omh-exec complete [summary...]` to advance the current task, `omh-exec block [summary...]` to mark it blocked, `omh-exec run [summary...]` to dispatch it into a worker lane, `omh-exec supervise <session-id> [command...]` to attach a detached worker session, or `omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` to update detached lifecycle state.'
             return {
                 'mode': 'awaiting-exec-input',
                 'workspace': str(root),
                 'stage': stage,
                 'wave': snapshot.state.get('current_wave'),
                 'current_task_slug': current_task_slug,
-                'usage': 'Use `omh-exec complete [summary...]` to advance the current task, `omh-exec block [summary...]` to mark it blocked, or `omh-exec run [summary...]` to dispatch it into a worker lane.',
+                'usage': usage,
+            }
+
+        attach_session_id, attach_command = _parse_supervision_attach(raw)
+        if attach_session_id:
+            orchestration = snapshot.state.get('worker_orchestration') or {}
+            if not orchestration.get('active_worker_id'):
+                return {
+                    'mode': 'error',
+                    'workspace': str(root),
+                    'reason': 'No active OMH worker is available to attach detached supervision.',
+                }
+            next_state = attach_worker_supervision(snapshot.state, session_id=attach_session_id, command=attach_command)
+            state_path = _write_state(root, next_state)
+            return {
+                'mode': 'worker-supervision-attached',
+                'workspace': str(root),
+                'state_path': str(state_path),
+                'session_id': attach_session_id,
+                'command': attach_command,
+                'state': next_state,
+            }
+
+        poll_session_id, poll_status, poll_observation, poll_exit_code = _parse_supervision_poll(raw)
+        if poll_session_id and poll_status:
+            try:
+                next_state = record_worker_supervision_poll(
+                    snapshot.state,
+                    session_id=poll_session_id,
+                    status=poll_status,
+                    observation=poll_observation,
+                    exit_code=poll_exit_code,
+                )
+            except ValueError as exc:
+                return {
+                    'mode': 'error',
+                    'workspace': str(root),
+                    'reason': str(exc),
+                }
+            state_path = _write_state(root, next_state)
+            return {
+                'mode': 'worker-supervision-polled',
+                'workspace': str(root),
+                'state_path': str(state_path),
+                'session_id': poll_session_id,
+                'supervision_status': poll_status,
+                'observation': poll_observation,
+                'state': next_state,
             }
 
         action, summary = _infer_exec_action(raw)
-        if action not in {'run', 'complete', 'block'}:
+        if action not in {'run', 'complete', 'block', 'accept'}:
             return {
                 'mode': 'usage',
                 'workspace': str(root),
                 'stage': stage,
-                'usage': 'Usage: `/omh-exec [run|complete|block <summary...>]` while execution is in `exec` stage.',
+                'usage': 'Usage: `/omh-exec [run|complete|block|accept <summary...>]`, `/omh-exec supervise <session-id> [command...]`, or `/omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` while execution is in `exec` stage.',
             }
         if not current_task_slug:
             return {
@@ -220,6 +305,17 @@ def build_exec_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[
                 'handoff_path': next_state.get('last_handoff'),
                 'state': next_state,
             }
+
+        if action == 'accept':
+            if not worker_result_bridge or not worker_result_bridge.get('ready'):
+                return {
+                    'mode': 'usage',
+                    'workspace': str(root),
+                    'stage': stage,
+                    'usage': 'Usage: `/omh-exec [run|complete|block|accept <summary...>]`, `/omh-exec supervise <session-id> [command...]`, or `/omh-exec poll <session-id> <running|completed|failed|lost> [--exit-code N] [observation...]` while execution is in `exec` stage.',
+                }
+            action = str(worker_result_bridge.get('recommended_action') or '').strip().lower() or 'block'
+            summary = summary or worker_result_bridge.get('summary')
 
         next_status = 'completed' if action == 'complete' else 'blocked'
         next_state = snapshot.state
@@ -327,6 +423,21 @@ def render_exec_text(payload: Dict[str, Any]) -> str:
             f'Task: {payload.get("task_slug") or "unknown"}\n'
             f'Handoff: {payload.get("handoff_path") or "none"}\n'
             f'Summary: {payload.get("summary") or "none"}'
+        )
+
+    if mode == 'worker-supervision-attached':
+        return (
+            'Attached OMH worker supervision\n\n'
+            f'Detached Session: {payload.get("session_id") or "unknown"}\n'
+            f'Command: {payload.get("command") or "none"}'
+        )
+
+    if mode == 'worker-supervision-polled':
+        return (
+            'Recorded OMH worker supervision poll\n\n'
+            f'Detached Session: {payload.get("session_id") or "unknown"}\n'
+            f'Status: {payload.get("supervision_status") or "unknown"}\n'
+            f'Observation: {payload.get("observation") or "none"}'
         )
 
     if mode == 'exec-transition-recorded':
