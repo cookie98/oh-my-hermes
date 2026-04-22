@@ -48,6 +48,10 @@ That means if the external Claude planning stage is flaky or unavailable, OMH sh
 - `atlas_state.py` inspects `.omh/state/atlas-state.json`, `.omh/plans/`, and execution artifacts
 - v1 worker orchestration now exists: worker dispatch state, worker handoff files, worker result recording, file-backed reattachment summaries across status/resume/continuation, detached worker supervision metadata, runtime-assisted detached session auto-refresh on status/resume/continuation entry via dedicated callbacks and common process-namespace fallbacks, detached worker result bridging with `omh-exec accept`, practical continuation enforcement with exact next-action hints, basic idle-time continuation pressure with persisted nudge cooldowns, and nudge-count-based idle escalation into stricter continuation enforcement are all implemented
 - plugin skill registration for `oh-my-hermes:sisyphus-orchestrator`
+- intent-aware plan generation with category-specific templates (implementation vs research vs fix)
+- plan-to-task bridge now extracts acceptance criteria, file targets, and test targets from plan markdown
+- `omh-exec` task-aware router classifies each active task as implement/research/verify before dispatch
+- cross-surface state consistency guard detects drift between task_sessions and worker_sessions
 
 ## Still missing
 
