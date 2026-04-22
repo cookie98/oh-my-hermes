@@ -4,17 +4,30 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-from .atlas_state import get_state_path, get_workspace_root, read_atlas_state
-from .omh_fix import build_fix_payload, render_fix_text
-from .omh_verify import build_verify_payload, render_verify_text
-from .task_sessions import summarize_task_sessions, transition_task_session
-from .worker_orchestration import (
-    attach_worker_supervision,
-    build_worker_result_bridge,
-    dispatch_exec_worker,
-    record_worker_result,
-    record_worker_supervision_poll,
-)
+try:
+    from .atlas_state import get_state_path, get_workspace_root, read_atlas_state
+    from .omh_fix import build_fix_payload, render_fix_text
+    from .omh_verify import build_verify_payload, render_verify_text
+    from .task_sessions import summarize_task_sessions, transition_task_session
+    from .worker_orchestration import (
+        attach_worker_supervision,
+        build_worker_result_bridge,
+        dispatch_exec_worker,
+        record_worker_result,
+        record_worker_supervision_poll,
+    )
+except ImportError:  # pragma: no cover - support direct module imports in tests
+    from atlas_state import get_state_path, get_workspace_root, read_atlas_state
+    from omh_fix import build_fix_payload, render_fix_text
+    from omh_verify import build_verify_payload, render_verify_text
+    from task_sessions import summarize_task_sessions, transition_task_session
+    from worker_orchestration import (
+        attach_worker_supervision,
+        build_worker_result_bridge,
+        dispatch_exec_worker,
+        record_worker_result,
+        record_worker_supervision_poll,
+    )
 
 _EXEC_COMPLETE_HINTS = (
     'complete',
@@ -80,6 +93,52 @@ _VERIFY_FAIL_HINTS = (
     '문제',
     '오류',
 )
+
+_TASK_RESEARCH_HINTS = frozenset({
+    'research', 'investigate', 'evaluate', 'compare', 'survey',
+    'look up', 'find out', 'check upstream',
+})
+_TASK_VERIFY_HINTS = frozenset({
+    'verify', 'verification', 'validate', 'check', 'test', 'regression',
+    'ensure', 'confirm', 'audit',
+})
+_TASK_IMPLEMENT_HINTS = frozenset({
+    'implement', 'add', 'create', 'write', 'build', 'introduce',
+    'refactor', 'fix', 'patch', 'update',
+})
+
+
+def _classify_task_session(task: Dict[str, Any]) -> str:
+    text = ' '.join([
+        task.get('label', ''),
+        ' '.join(task.get('acceptance', [])),
+        ' '.join(task.get('files', [])),
+    ]).lower()
+    if any(h in text for h in _TASK_VERIFY_HINTS):
+        return 'verify'
+    if any(h in text for h in _TASK_RESEARCH_HINTS):
+        return 'research'
+    if any(h in text for h in _TASK_IMPLEMENT_HINTS):
+        return 'implement'
+    return 'implement'
+
+
+def _resolve_active_task_session(state: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    task_sessions = (state or {}).get('task_sessions') or {}
+    fallback: Dict[str, Any] | None = None
+
+    for payload in task_sessions.values():
+        if not isinstance(payload, dict):
+            continue
+        status = str(payload.get('status') or '').strip().lower()
+        if status in {'completed', 'cancelled', 'done'}:
+            continue
+        if status in {'in_progress', 'blocked'}:
+            return payload
+        if fallback is None:
+            fallback = payload
+
+    return fallback
 
 
 def _strip_json_flag(raw_args: str) -> Tuple[str, bool]:
@@ -264,6 +323,31 @@ def build_exec_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[
                 'state': next_state,
             }
 
+        active_task = _resolve_active_task_session(snapshot.state)
+        if active_task:
+            task_label = str(active_task.get('label') or '').strip() or str(active_task.get('task_slug') or current_task_slug or '').strip()
+            category = _classify_task_session(active_task)
+            if category == 'research':
+                try:
+                    from .research_lane import run_research_lane
+                except ImportError:  # pragma: no cover - support direct module imports in tests
+                    from research_lane import run_research_lane
+                return {
+                    'mode': 'task-aware-research',
+                    'workspace': str(root),
+                    'task_label': task_label,
+                    'text': run_research_lane(task_label),
+                }
+            if category == 'verify':
+                verify_payload = build_verify_payload('', workspace=root, task_label=task_label)
+                return {
+                    'mode': 'task-aware-verify',
+                    'workspace': str(root),
+                    'task_label': task_label,
+                    'verify': verify_payload,
+                    'text': render_verify_text(verify_payload),
+                }
+
         action, summary = _infer_exec_action(raw)
         if action not in {'run', 'complete', 'block', 'accept'}:
             return {
@@ -407,6 +491,12 @@ def render_exec_text(payload: Dict[str, Any]) -> str:
             f'Wave: {payload.get("wave") if payload.get("wave") is not None else "unknown"}\n\n'
             f'{payload.get("usage")}'
         )
+
+    if mode == 'task-aware-research':
+        return str(payload.get('text') or '')
+
+    if mode == 'task-aware-verify':
+        return str(payload.get('text') or '')
 
     if mode == 'worker-dispatch-blocked':
         return (

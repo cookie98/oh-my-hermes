@@ -4,8 +4,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-from .atlas_state import get_state_path, get_workspace_root, read_atlas_state
-from .verify_fix import record_verification_result
+try:
+    from .atlas_state import get_state_path, get_workspace_root, read_atlas_state
+    from .verify_fix import record_verification_result
+except ImportError:  # pragma: no cover - support direct module imports in tests
+    from atlas_state import get_state_path, get_workspace_root, read_atlas_state
+    from verify_fix import record_verification_result
 
 
 def _parse_args(raw_args: str) -> Tuple[str | None, str | None, bool]:
@@ -31,8 +35,17 @@ def _write_state(workspace: Path, state: Dict[str, Any]) -> Path:
     return state_path
 
 
-def build_verify_payload(raw_args: str, *, workspace: Path | None = None) -> Dict[str, Any]:
+def build_verify_payload(raw_args: str = '', *, workspace: Path | None = None, task_label: str | None = None) -> Dict[str, Any]:
     root = (workspace or get_workspace_root()).expanduser().resolve()
+    if task_label is not None:
+        normalized_label = ' '.join(str(task_label or '').split()).strip() or 'unknown'
+        return {
+            'mode': 'usage',
+            'workspace': str(root),
+            'task_label': normalized_label,
+            'usage': f'OMH verification requested for task: {normalized_label}. Use `omh-verify <pass|fail> [summary...]` when ready.',
+        }
+
     outcome, summary, _json_mode = _parse_args(raw_args)
     if outcome not in {'pass', 'fail'}:
         return {

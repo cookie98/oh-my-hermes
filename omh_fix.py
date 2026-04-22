@@ -4,8 +4,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-from .atlas_state import get_state_path, get_workspace_root, read_atlas_state
-from .verify_fix import record_fix_result
+try:
+    from .atlas_state import get_state_path, get_workspace_root, read_atlas_state
+    from .verify_fix import record_fix_result
+except ImportError:  # pragma: no cover - support direct module imports in tests
+    from atlas_state import get_state_path, get_workspace_root, read_atlas_state
+    from verify_fix import record_fix_result
 
 
 def _parse_args(raw_args: str) -> Tuple[str | None, bool]:

@@ -58,3 +58,8 @@ def render_research_lane_text(payload: Dict[str, Any]) -> str:
         lines.append(f'- {lane}: {message}')
 
     return '\n'.join(lines)
+
+
+def run_research_lane(request: str) -> str:
+    payload = build_research_lane_payload(request)
+    return render_research_lane_text(payload)
