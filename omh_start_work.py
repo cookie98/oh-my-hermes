@@ -24,6 +24,24 @@ _TEST_TARGET_RE = re.compile(r'^[-*]\s*(?:Test|Test file)[:\s]+(.+)$', re.IGNORE
 _SLUG_NON_ALNUM_RE = re.compile(r'[^a-z0-9]+')
 
 
+class _TaskSessionMap(dict):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._alias_to_key = {f'T{i}': key for i, key in enumerate(super().keys(), start=1)}
+
+    def _resolve_key(self, key: Any) -> Any:
+        return self._alias_to_key.get(key, key)
+
+    def __getitem__(self, key: Any) -> Any:
+        return super().__getitem__(self._resolve_key(key))
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        return super().get(self._resolve_key(key), default)
+
+    def __contains__(self, key: object) -> bool:
+        return super().__contains__(key) or key in self._alias_to_key
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
@@ -85,7 +103,6 @@ def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
     has_todos_heading = any(str(line).strip().lower() == '## todos' for line in lines)
     in_todos = not has_todos_heading
     task_sessions: Dict[str, Any] = {}
-    task_index = 0
     current_slug: str | None = None
     current_task: Dict[str, Any] | None = None
     leading_metadata = {
@@ -123,8 +140,7 @@ def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
             label = _TASK_LABEL_PREFIX_RE.sub('', label).strip()
             if not label:
                 continue
-            task_index += 1
-            slug = f'T{task_index}'
+            slug = _slugify(label)
             current_slug = slug
             current_task = {
                 'task_slug': slug,
@@ -164,7 +180,7 @@ def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
             continue
 
     flush_current_task()
-    return task_sessions
+    return _TaskSessionMap(task_sessions)
 
 
 def _build_initial_state(*, workspace: Path, plan_path: Path, plan_name: str, worktree_path: str | None) -> Dict[str, Any]:
