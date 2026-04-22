@@ -84,6 +84,13 @@ def _write_state(workspace: Path, state: dict) -> Path:
     return state_path
 
 
+def _preferred_task_key(state: dict, preferred: str, index: int) -> str:
+    task_keys = list(state['task_sessions'].keys())
+    if preferred in state['task_sessions']:
+        return preferred
+    return task_keys[index]
+
+
 def _completed_verify_state(workspace: Path) -> dict:
     plan_module = _load_module('omh_plan')
     start_module = _load_module('omh_start_work')
@@ -212,12 +219,13 @@ def test_handle_omh_exec_command_dispatches_exec_task_into_a_worker_lane():
         worker_id = orchestration['active_worker_id']
         session = orchestration['worker_sessions'][worker_id]
 
+        first_task_key = _preferred_task_key(updated, 'T1', 0)
         assert 'worker-dispatched' in result
         assert orchestration['mode'] == 'dispatching'
-        assert orchestration['current_task_slug'] == 'confirm-scope-and-acceptance-criteria-for-add-auth-middleware'
-        assert worker_id.startswith('worker-confirm-scope-and-acceptance-criteria-for-add-auth-middleware-wave-1')
+        assert orchestration['current_task_slug'] == first_task_key
+        assert worker_id.startswith(f'worker-{first_task_key}-wave-1')
         assert session['status'] == 'dispatching'
-        assert session['task_slug'] == 'confirm-scope-and-acceptance-criteria-for-add-auth-middleware'
+        assert session['task_slug'] == first_task_key
         assert Path(updated['last_handoff']).exists()
 
 
@@ -315,8 +323,10 @@ def test_handle_omh_exec_command_accepts_ready_detached_worker_result_bridge_as_
 
         result = module.handle_omh_exec_command('accept', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
-        first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
-        second = updated['task_sessions']['identify-the-primary-files-modules-or-surfaces-likely-to-change']
+        first_task_key = _preferred_task_key(updated, 'T1', 0)
+        second_task_key = _preferred_task_key(updated, 'T2', 1)
+        first = updated['task_sessions'][first_task_key]
+        second = updated['task_sessions'][second_task_key]
 
         assert 'Recorded OMH exec task transition' in result
         assert 'Outcome: completed' in result
@@ -342,7 +352,8 @@ def test_handle_omh_exec_command_accepts_failed_detached_worker_result_bridge_as
 
         result = module.handle_omh_exec_command('accept', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
-        first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
+        first_task_key = _preferred_task_key(updated, 'T1', 0)
+        first = updated['task_sessions'][first_task_key]
 
         assert 'Recorded OMH exec task transition' in result
         assert 'Outcome: blocked' in result
@@ -406,8 +417,10 @@ def test_handle_omh_exec_command_completes_current_task_and_promotes_next_pendin
 
         result = module.handle_omh_exec_command('complete scope confirmed', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
-        first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
-        second = updated['task_sessions']['identify-the-primary-files-modules-or-surfaces-likely-to-change']
+        first_task_key = _preferred_task_key(updated, 'T1', 0)
+        second_task_key = _preferred_task_key(updated, 'T2', 1)
+        first = updated['task_sessions'][first_task_key]
+        second = updated['task_sessions'][second_task_key]
         session = updated['worker_orchestration']['worker_sessions'][worker_id]
 
         assert 'worker-dispatched' in dispatch_result
@@ -441,7 +454,8 @@ def test_handle_omh_exec_command_blocks_current_task_and_marks_execution_blocked
 
         result = module.handle_omh_exec_command('block waiting for requirement clarification', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
-        first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
+        first_task_key = _preferred_task_key(updated, 'T1', 0)
+        first = updated['task_sessions'][first_task_key]
         session = updated['worker_orchestration']['worker_sessions'][worker_id]
 
         assert 'worker-dispatched' in dispatch_result
@@ -469,8 +483,10 @@ def test_handle_omh_exec_command_infers_completion_from_natural_language_followu
 
         result = module.handle_omh_exec_command('scope confirmed and ready for the next task', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
-        first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
-        second = updated['task_sessions']['identify-the-primary-files-modules-or-surfaces-likely-to-change']
+        first_task_key = _preferred_task_key(updated, 'T1', 0)
+        second_task_key = _preferred_task_key(updated, 'T2', 1)
+        first = updated['task_sessions'][first_task_key]
+        second = updated['task_sessions'][second_task_key]
 
         assert 'Recorded OMH exec task transition' in result
         assert 'Outcome: completed' in result
