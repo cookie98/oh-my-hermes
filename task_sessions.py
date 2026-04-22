@@ -27,6 +27,17 @@ def _normalize_status(value: Any) -> str:
     return status
 
 
+def _normalize_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, tuple) or isinstance(value, set):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def normalize_task_sessions(task_sessions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     normalized: Dict[str, Dict[str, Any]] = {}
     for key, payload in (task_sessions or {}).items():
@@ -36,6 +47,9 @@ def normalize_task_sessions(task_sessions: Dict[str, Any]) -> Dict[str, Dict[str
         entry['task_slug'] = slug
         entry['label'] = label
         entry['status'] = _normalize_status(entry.get('status'))
+        entry['acceptance'] = _normalize_list(entry.get('acceptance'))
+        entry['files'] = _normalize_list(entry.get('files'))
+        entry['tests'] = _normalize_list(entry.get('tests'))
         normalized[slug] = entry
     return normalized
 

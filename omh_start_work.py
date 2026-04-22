@@ -6,13 +6,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from .atlas_state import discover_canonical_plans, get_workspace_root, read_atlas_state
-from .task_sessions import seed_task_sessions
-from .worker_orchestration import normalize_worker_orchestration
+try:
+    from .atlas_state import discover_canonical_plans, get_workspace_root, read_atlas_state
+    from .task_sessions import seed_task_sessions
+    from .worker_orchestration import normalize_worker_orchestration
+except ImportError:  # pragma: no cover - support direct module imports in tests
+    from atlas_state import discover_canonical_plans, get_workspace_root, read_atlas_state
+    from task_sessions import seed_task_sessions
+    from worker_orchestration import normalize_worker_orchestration
 
 _HEADING_RE = re.compile(r'^##\s+')
 _UNCHECKED_TASK_RE = re.compile(r'^- \[ \]\s*(.+?)\s*$')
 _TASK_LABEL_PREFIX_RE = re.compile(r'^(?:F?\d+\.)\s*')
+_ACCEPTANCE_RE = re.compile(r'^[-*]\s*(?:AC|Acceptance Criteria?)[:\s]+(.+)$', re.IGNORECASE)
+_FILE_TARGET_RE = re.compile(r'^[-*]\s*(?:File|Modify|Create)[:\s]+(.+)$', re.IGNORECASE)
+_TEST_TARGET_RE = re.compile(r'^[-*]\s*(?:Test|Test file)[:\s]+(.+)$', re.IGNORECASE)
 _SLUG_NON_ALNUM_RE = re.compile(r'[^a-z0-9]+')
 
 
@@ -73,32 +81,88 @@ def _notepad_dir(workspace: Path, plan_name: str) -> Path:
 
 def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
     text = plan_path.read_text(encoding='utf-8')
-    in_todos = False
+    lines = text.splitlines()
+    in_todos = not any(str(line).strip().lower() == '## todos' for line in lines)
     task_sessions: Dict[str, Any] = {}
+    task_index = 0
+    current_slug: str | None = None
+    current_task: Dict[str, Any] | None = None
+    leading_metadata = {
+        'acceptance': [],
+        'files': [],
+        'tests': [],
+    }
 
-    for line in text.splitlines():
+    def flush_current_task() -> None:
+        nonlocal current_slug, current_task
+        if current_slug is not None and current_task is not None:
+            task_sessions[current_slug] = current_task
+        current_slug = None
+        current_task = None
+
+    def append_metadata(target: Dict[str, Any], key: str, value: str) -> None:
+        text_value = value.strip()
+        if text_value:
+            target[key].append(text_value)
+
+    for line in lines:
         stripped = line.strip()
         if stripped.lower() == '## todos':
             in_todos = True
             continue
-        if in_todos and _HEADING_RE.match(stripped):
-            break
         if not in_todos:
             continue
-        match = _UNCHECKED_TASK_RE.match(stripped)
-        if not match:
-            continue
-        label = match.group(1).strip()
-        label = _TASK_LABEL_PREFIX_RE.sub('', label).strip()
-        if not label:
-            continue
-        slug = _slugify(label)
-        task_sessions[slug] = {
-            'task_slug': slug,
-            'label': label,
-            'status': 'pending',
-        }
+        if _HEADING_RE.match(stripped) and stripped.lower() != '## todos':
+            break
 
+        match = _UNCHECKED_TASK_RE.match(stripped)
+        if match:
+            flush_current_task()
+            label = match.group(1).strip()
+            label = _TASK_LABEL_PREFIX_RE.sub('', label).strip()
+            if not label:
+                continue
+            task_index += 1
+            slug = f'T{task_index}'
+            current_slug = slug
+            current_task = {
+                'task_slug': slug,
+                'label': label,
+                'status': 'pending',
+                'acceptance': [],
+                'files': [],
+                'tests': [],
+            }
+            if any(leading_metadata.values()):
+                current_task['acceptance'].extend(leading_metadata['acceptance'])
+                current_task['files'].extend(leading_metadata['files'])
+                current_task['tests'].extend(leading_metadata['tests'])
+                leading_metadata['acceptance'].clear()
+                leading_metadata['files'].clear()
+                leading_metadata['tests'].clear()
+            continue
+
+        if current_task is None:
+            target = leading_metadata
+        else:
+            target = current_task
+
+        acceptance = _ACCEPTANCE_RE.match(stripped)
+        if acceptance:
+            append_metadata(target, 'acceptance', acceptance.group(1))
+            continue
+
+        file_target = _FILE_TARGET_RE.match(stripped)
+        if file_target:
+            append_metadata(target, 'files', file_target.group(1))
+            continue
+
+        test_target = _TEST_TARGET_RE.match(stripped)
+        if test_target:
+            append_metadata(target, 'tests', test_target.group(1))
+            continue
+
+    flush_current_task()
     return task_sessions
 
 

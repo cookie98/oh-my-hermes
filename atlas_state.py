@@ -6,8 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .task_sessions import normalize_task_sessions
-from .worker_orchestration import normalize_worker_orchestration
+try:
+    from .task_sessions import normalize_task_sessions
+    from .worker_orchestration import normalize_worker_orchestration
+except ImportError:  # pragma: no cover - support direct module imports in tests
+    from task_sessions import normalize_task_sessions
+    from worker_orchestration import normalize_worker_orchestration
 
 STATE_RELATIVE_PATH = Path('.omh/state/atlas-state.json')
 PLAN_DIR_RELATIVE_PATH = Path('.omh/plans')
