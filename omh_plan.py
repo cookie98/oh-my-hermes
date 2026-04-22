@@ -385,6 +385,11 @@ def finalize_draft_plan_payload(name: str, *, workspace: Path | None = None) -> 
     slug = draft_path.stem
     draft_content = draft_path.read_text(encoding='utf-8')
     canonical_content = draft_content.replace(_DRAFT_BANNER, _CANONICAL_BANNER, 1)
+    canonical_content = canonical_content.replace('Hermes-first draft scaffold', 'Hermes-first scaffold', 1)
+    if 'This initial draft plan' in canonical_content:
+        canonical_content = canonical_content.replace('This initial draft plan', 'This initial canonical plan', 1)
+    if '## Next Step' in canonical_content:
+        canonical_content = canonical_content.split('## Next Step')[0].rstrip() + '\n'
     intent = _extract_source_intent(draft_content, slug)
 
     canonical_dir = _plan_dir(root)
