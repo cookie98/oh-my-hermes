@@ -121,9 +121,9 @@ def test_build_status_payload_reports_current_task_and_task_status_counts():
         state = start_payload['state']
         payload = status_module.build_status_payload(workspace=workspace)
 
-        assert payload['task_sessions']['count'] == 24
+        assert payload['task_sessions']['count'] == 22
         assert payload['task_sessions']['by_status']['in_progress'] == 1
-        assert payload['task_sessions']['by_status']['pending'] == 23
+        assert payload['task_sessions']['by_status']['pending'] == 21
         expected_current_slug = list(state['task_sessions'].keys())[0]
         assert payload['task_sessions']['current_task_slug'] == expected_current_slug
         assert payload['active_task_slugs'][0] == expected_current_slug

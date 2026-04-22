@@ -110,7 +110,7 @@ def test_record_verification_failure_routes_execution_into_fix_stage():
 
         assert next_state['status'] == 'active'
         assert next_state['current_stage'] == 'fix'
-        assert next_state['current_wave'] == 25
+        assert next_state['current_wave'] == 23
         assert next_state['last_handoff'].endswith('.omh/handoffs/verify.md')
         assert Path(next_state['last_handoff']).exists()
 

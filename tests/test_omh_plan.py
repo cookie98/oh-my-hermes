@@ -56,12 +56,14 @@ def test_implementation_plan_contains_task_structure():
 
         assert payload['intent_category'] == 'implementation'
         assert '## Goal' in plan_text
-        assert '## Architecture' in plan_text
-        assert '## Tech Stack' in plan_text
-        assert '## Task 1 (Scope & Acceptance Criteria)' in plan_text
-        assert '## Task 2 (Implementation with TDD steps)' in plan_text
-        assert '## Task 3 (Verification)' in plan_text
-        assert '## Final Verification Wave' in plan_text
+        assert '**blockedBy:**' in plan_text
+        assert '**blocks:**' in plan_text
+        assert '**parentID:**' in plan_text
+        assert '## Task 1: Architecture & Tech Stack' in plan_text
+        assert '## Task 2: Scope & Acceptance Criteria' in plan_text
+        assert '## Task 3: Implementation with TDD' in plan_text
+        assert '## Task 4: Verification' in plan_text
+        assert '## Task 5: Final Verification Wave' in plan_text
         assert '- [ ] Write or update a failing test first' in plan_text
         assert 'path/to/primary_module.py' in plan_text
 
@@ -75,12 +77,15 @@ def test_research_plan_contains_research_questions():
         plan_text = Path(payload['plan']['path']).read_text(encoding='utf-8')
 
         assert payload['intent_category'] == 'research'
-        assert '## Research Questions' in plan_text
+        assert '## Task 0: Research Questions' in plan_text
+        assert '**blockedBy:**' in plan_text
+        assert '**blocks:**' in plan_text
+        assert '**parentID:**' in plan_text
         assert 'R1.' in plan_text
         assert 'R2.' in plan_text
         assert 'R3.' in plan_text
-        assert '## Deliverables' in plan_text
-        assert '## Final Verification' in plan_text
+        assert '## Task 1: Deliverables' in plan_text
+        assert '## Task 2: Final Verification' in plan_text
 
 
 def test_slugify_replaces_non_alnum_with_hyphen():

@@ -136,7 +136,7 @@ def test_handle_omh_verify_command_records_failure_and_routes_to_fix_stage():
         assert 'Outcome: failed' in result
         assert updated['status'] == 'active'
         assert updated['current_stage'] == 'fix'
-        assert updated['current_wave'] == 25
+        assert updated['current_wave'] == 23
 
 
 def test_handle_omh_fix_command_reenters_verify_and_updates_state_file():
