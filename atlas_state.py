@@ -41,6 +41,7 @@ class AtlasStateSnapshot:
     active_task_slugs: List[str]
     warnings: List[str]
     errors: List[str]
+    consistency_warnings: List[str]
 
 
 def get_workspace_root() -> Path:
@@ -139,11 +140,40 @@ def _task_sessions_terminal(task_sessions: Dict[str, Any]) -> bool:
     return True
 
 
+def _check_state_consistency(state: Dict[str, Any]) -> List[str]:
+    warnings: List[str] = []
+    task_sessions = state.get('task_sessions') if isinstance(state.get('task_sessions'), dict) else {}
+    worker_orchestration = state.get('worker_orchestration') if isinstance(state.get('worker_orchestration'), dict) else {}
+    worker_sessions = worker_orchestration.get('worker_sessions') if isinstance(worker_orchestration.get('worker_sessions'), dict) else {}
+
+    for slug, payload in task_sessions.items():
+        if not isinstance(payload, dict):
+            continue
+
+        task_status = str(payload.get('status') or '').strip().lower()
+        session_id = str(payload.get('session_id') or '').strip()
+        if not session_id:
+            continue
+
+        worker = worker_sessions.get(session_id)
+        worker_status = str(worker.get('status') or '').strip().lower() if isinstance(worker, dict) else None
+
+        if worker is None and task_status in {'running', 'dispatched'}:
+            warnings.append(f"Task '{slug}' is {task_status} but has no worker session")
+        elif task_status in {'completed', 'cancelled'} and worker_status in {'running', 'dispatched'}:
+            warnings.append(f"Task '{slug}' is {task_status} but worker '{session_id}' is still {worker_status}")
+        elif task_status in {'running', 'dispatched'} and worker_status in {'completed', 'failed', 'lost'}:
+            warnings.append(f"Task '{slug}' is {task_status} but worker '{session_id}' is already {worker_status}")
+
+    return warnings
+
+
 def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
     root = workspace or get_workspace_root()
     state_path = get_state_path(root)
     warnings: List[str] = []
     errors: List[str] = []
+    consistency_warnings: List[str] = []
 
     if not state_path.exists():
         return AtlasStateSnapshot(
@@ -158,6 +188,7 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
             active_task_slugs=[],
             warnings=warnings,
             errors=errors,
+            consistency_warnings=consistency_warnings,
         )
 
     try:
@@ -176,6 +207,7 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
             active_task_slugs=[],
             warnings=warnings,
             errors=errors,
+            consistency_warnings=consistency_warnings,
         )
 
     if not isinstance(raw, dict):
@@ -192,9 +224,11 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
             active_task_slugs=[],
             warnings=warnings,
             errors=errors,
+            consistency_warnings=consistency_warnings,
         )
 
     state = _normalize_state(raw)
+    consistency_warnings = _check_state_consistency(state)
     task_sessions = state.get('task_sessions') or {}
     active_task_slugs = _derive_active_task_slugs(task_sessions)
     task_sessions_terminal = _task_sessions_terminal(task_sessions)
@@ -213,6 +247,7 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
             active_task_slugs=active_task_slugs,
             warnings=warnings,
             errors=errors,
+            consistency_warnings=consistency_warnings,
         )
 
     active_plan_raw = state.get('active_plan')
@@ -230,6 +265,7 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
             active_task_slugs=active_task_slugs,
             warnings=warnings,
             errors=errors,
+            consistency_warnings=consistency_warnings,
         )
 
     active_plan = Path(active_plan_raw).expanduser()
@@ -249,6 +285,7 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
             active_task_slugs=active_task_slugs,
             warnings=warnings,
             errors=errors,
+            consistency_warnings=consistency_warnings,
         )
 
     progress = _count_checkboxes(active_plan)
@@ -271,6 +308,7 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
                 active_task_slugs=active_task_slugs,
                 warnings=warnings,
                 errors=errors,
+                consistency_warnings=consistency_warnings,
             )
 
     last_handoff = state.get('last_handoff')
@@ -307,4 +345,5 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
         active_task_slugs=active_task_slugs,
         warnings=warnings,
         errors=errors,
+        consistency_warnings=consistency_warnings,
     )

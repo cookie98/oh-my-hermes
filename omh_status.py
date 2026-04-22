@@ -122,6 +122,7 @@ def build_status_payload(
         'updated_at': state.get('updated_at') or state.get('started_at'),
         'warnings': list(snapshot.warnings),
         'errors': list(snapshot.errors),
+        'consistency_warnings': list(snapshot.consistency_warnings),
     }
 
     if snapshot.progress is not None:
@@ -284,6 +285,11 @@ def render_status_text(payload: Dict[str, Any]) -> str:
         if next_action:
             lines.append(next_action)
         lines.extend(idle_lines)
+        if payload.get('consistency_warnings'):
+            lines.append('')
+            lines.append('State Consistency Warnings:')
+            for w in payload.get('consistency_warnings') or []:
+                lines.append(f'  - {w}')
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
@@ -326,6 +332,11 @@ def render_status_text(payload: Dict[str, Any]) -> str:
         if next_action:
             lines.append(next_action)
         lines.extend(idle_lines)
+        if payload.get('consistency_warnings'):
+            lines.append('')
+            lines.append('State Consistency Warnings:')
+            for w in payload.get('consistency_warnings') or []:
+                lines.append(f'  - {w}')
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
