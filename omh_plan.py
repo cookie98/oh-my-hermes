@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from .atlas_state import discover_canonical_plans, get_workspace_root
+from .intent_gate import classify_intent
 
 _SLUG_NON_ALNUM_RE = re.compile(r'[^a-z0-9]+')
 
@@ -84,6 +85,101 @@ This initial canonical plan is a deterministic scaffold. It is intentionally con
 '''
 
 
+def _render_plan_for_category(*, intent: str, slug: str, workspace: Path, category: str) -> str:
+    title = _titleize_slug(slug)
+    if category in {'implementation', 'fix'}:
+        return f'''# {title}
+
+> Intent-aware OMH implementation plan
+
+**Plan Name:** `{slug}`
+**Workspace:** `{workspace}`
+**Source Intent:** {intent}
+**Plan Category:** {category}
+
+## Goal
+
+- [ ] Restate the requested change in one sentence
+- [ ] Confirm the acceptance criteria and non-goals
+- [ ] Identify the primary files likely to change: `{workspace}/path/to/primary_module.py`
+
+## Architecture
+
+- [ ] Describe the current flow and the proposed control flow
+- [ ] Call out integration points, state, and dependencies
+- [ ] Record any file placeholders to update:
+  - `{workspace}/path/to/primary_module.py`
+  - `{workspace}/path/to/test_primary_module.py`
+
+## Tech Stack
+
+- [ ] Confirm runtime, framework, and test tooling constraints
+- [ ] Note any new dependencies, feature flags, or environment variables
+- [ ] Keep the implementation surface as small as possible
+
+## Task 1 (Scope & Acceptance Criteria)
+
+- [ ] Define the precise user-visible behavior
+- [ ] Write acceptance criteria as observable outcomes
+- [ ] Identify non-goals and risk boundaries
+- [ ] File placeholder: `{workspace}/docs/{slug}-scope.md`
+
+## Task 2 (Implementation with TDD steps)
+
+- [ ] Write or update a failing test first
+- [ ] Implement the smallest change needed to satisfy the test
+- [ ] Refactor only after the test is green
+- [ ] Update the relevant files:
+  - `{workspace}/path/to/primary_module.py`
+  - `{workspace}/path/to/tests/test_primary_module.py`
+
+## Task 3 (Verification)
+
+- [ ] Run focused tests for the touched behavior
+- [ ] Run any adjacent regression tests that protect the change
+- [ ] Capture evidence that the acceptance criteria are met
+- [ ] File placeholder: `{workspace}/artifacts/{slug}-verification.log`
+
+## Final Verification Wave
+
+- [ ] Re-read the original request and confirm every requirement is covered
+- [ ] Verify the plan references the right files and surfaces
+- [ ] Record any remaining caveats or follow-up work explicitly
+'''
+
+    if category in {'research', 'investigation', 'evaluation'}:
+        return f'''# {title}
+
+> Intent-aware OMH research plan
+
+**Plan Name:** `{slug}`
+**Workspace:** `{workspace}`
+**Source Intent:** {intent}
+**Plan Category:** {category}
+
+## Research Questions
+
+- [ ] R1. What is the current state of the target area or problem?
+- [ ] R2. What options, constraints, or trade-offs should be evaluated?
+- [ ] R3. What evidence is needed to choose the safest next step?
+
+## Deliverables
+
+- [ ] Summarize findings in a concise decision note
+- [ ] Capture references, data points, or reproduction evidence
+- [ ] Identify any follow-up implementation or verification tasks
+- [ ] File placeholder: `{workspace}/docs/{slug}-research-notes.md`
+
+## Final Verification
+
+- [ ] Confirm every research question was answered or explicitly marked unknown
+- [ ] Ensure the deliverables are saved and easy to hand off
+- [ ] Record unresolved risks or next actions
+'''
+
+    return _render_plan_markdown(intent=intent, slug=slug, workspace=workspace)
+
+
 def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[str, Any]:
     root = (workspace or get_workspace_root()).expanduser().resolve()
     normalized_intent = (intent or '').strip()
@@ -91,6 +187,8 @@ def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[st
         raise ValueError('intent is required')
 
     slug = _slugify(normalized_intent)
+    intent_decision = classify_intent(normalized_intent)
+    intent_category = intent_decision.intent
     plan_dir = _plan_dir(root)
     plan_dir.mkdir(parents=True, exist_ok=True)
     plan_path = _plan_path_for_intent(normalized_intent, root)
@@ -98,7 +196,7 @@ def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[st
     created = False
     if not plan_path.exists():
         plan_path.write_text(
-            _render_plan_markdown(intent=normalized_intent, slug=slug, workspace=root),
+            _render_plan_for_category(intent=normalized_intent, slug=slug, workspace=root, category=intent_category),
             encoding='utf-8',
         )
         created = True
@@ -108,6 +206,7 @@ def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[st
         'created': created,
         'planning_backend': 'hermes-native',
         'intent': normalized_intent,
+        'intent_category': intent_category,
         'plan': {
             'name': slug,
             'title': _titleize_slug(slug),
