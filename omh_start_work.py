@@ -82,7 +82,8 @@ def _notepad_dir(workspace: Path, plan_name: str) -> Path:
 def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
     text = plan_path.read_text(encoding='utf-8')
     lines = text.splitlines()
-    in_todos = not any(str(line).strip().lower() == '## todos' for line in lines)
+    has_todos_heading = any(str(line).strip().lower() == '## todos' for line in lines)
+    in_todos = not has_todos_heading
     task_sessions: Dict[str, Any] = {}
     task_index = 0
     current_slug: str | None = None
@@ -112,7 +113,7 @@ def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
             continue
         if not in_todos:
             continue
-        if _HEADING_RE.match(stripped) and stripped.lower() != '## todos':
+        if has_todos_heading and _HEADING_RE.match(stripped) and stripped.lower() != '## todos':
             break
 
         match = _UNCHECKED_TASK_RE.match(stripped)
