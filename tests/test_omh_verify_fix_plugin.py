@@ -110,7 +110,7 @@ def test_record_verification_failure_routes_execution_into_fix_stage():
 
         assert next_state['status'] == 'active'
         assert next_state['current_stage'] == 'fix'
-        assert next_state['current_wave'] == 8
+        assert next_state['current_wave'] == 25
         assert next_state['last_handoff'].endswith('.omh/handoffs/verify.md')
         assert Path(next_state['last_handoff']).exists()
 
@@ -122,7 +122,7 @@ def test_record_fix_result_reenters_verify_stage_and_writes_fix_handoff():
         workspace = Path(tmp)
         state = _completed_verify_state(workspace)
         state['current_stage'] = 'fix'
-        state['current_wave'] = 8
+        state['current_wave'] = 25
         next_state = verify_module.record_fix_result(
             state,
             workspace=workspace,
@@ -132,7 +132,7 @@ def test_record_fix_result_reenters_verify_stage_and_writes_fix_handoff():
 
         assert next_state['status'] == 'active'
         assert next_state['current_stage'] == 'verify'
-        assert next_state['current_wave'] == 8
+        assert next_state['current_wave'] == 25
         assert next_state['fixed_at'] == '2026-04-19T16:20:00Z'
         assert next_state['last_handoff'].endswith('.omh/handoffs/fix.md')
         assert Path(next_state['last_handoff']).exists()

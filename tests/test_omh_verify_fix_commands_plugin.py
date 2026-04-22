@@ -136,7 +136,7 @@ def test_handle_omh_verify_command_records_failure_and_routes_to_fix_stage():
         assert 'Outcome: failed' in result
         assert updated['status'] == 'active'
         assert updated['current_stage'] == 'fix'
-        assert updated['current_wave'] == 8
+        assert updated['current_wave'] == 25
 
 
 def test_handle_omh_fix_command_reenters_verify_and_updates_state_file():
@@ -146,7 +146,7 @@ def test_handle_omh_fix_command_reenters_verify_and_updates_state_file():
         workspace = Path(tmp)
         state = _completed_verify_state(workspace)
         state['current_stage'] = 'fix'
-        state['current_wave'] = 8
+        state['current_wave'] = 25
         state_path = _write_state(workspace, state)
 
         result = module.handle_omh_fix_command('applied remediation patch', workspace=workspace)
@@ -156,7 +156,7 @@ def test_handle_omh_fix_command_reenters_verify_and_updates_state_file():
         assert 'Next Stage: verify' in result
         assert updated['status'] == 'active'
         assert updated['current_stage'] == 'verify'
-        assert updated['current_wave'] == 8
+        assert updated['current_wave'] == 25
         assert Path(updated['last_handoff']).exists()
 
 
