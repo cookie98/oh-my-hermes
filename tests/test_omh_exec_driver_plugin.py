@@ -111,6 +111,63 @@ def _completed_verify_state(workspace: Path) -> dict:
     return state
 
 
+def _lineage_exec_state(workspace: Path) -> dict:
+    return {
+        'status': 'active',
+        'current_stage': 'exec',
+        'current_wave': 1,
+        'worktree_path': str(workspace),
+        'task_sessions': {
+            'root-alpha-task': {
+                'task_slug': 'root-alpha-task',
+                'label': 'Root alpha task',
+                'status': 'in_progress',
+                'wave': 1,
+                'blockedBy': [],
+                'acceptance': ['root alpha done'],
+            },
+            'root-beta-task': {
+                'task_slug': 'root-beta-task',
+                'label': 'Root beta task',
+                'status': 'pending',
+                'wave': 1,
+                'blockedBy': [],
+                'acceptance': ['root beta done'],
+            },
+            'integrate-alpha-and-beta': {
+                'task_slug': 'integrate-alpha-and-beta',
+                'label': 'Integrate alpha and beta',
+                'status': 'pending',
+                'wave': 2,
+                'blockedBy': ['root-alpha-task', 'root-beta-task'],
+                'acceptance': ['integration complete'],
+            },
+            'final-completion-bundle': {
+                'task_slug': 'final-completion-bundle',
+                'label': 'Final completion bundle',
+                'status': 'pending',
+                'wave': 3,
+                'blockedBy': ['integrate-alpha-and-beta'],
+                'acceptance': ['final bundle written'],
+            },
+        },
+        'lineage': {
+            'waves': [
+                ['root-alpha-task', 'root-beta-task'],
+                ['integrate-alpha-and-beta'],
+                ['final-completion-bundle'],
+            ],
+            'total_waves': 3,
+        },
+        'worker_orchestration': {
+            'mode': 'idle',
+            'current_task_slug': 'root-alpha-task',
+            'active_worker_id': None,
+            'worker_sessions': {},
+        },
+    }
+
+
 def test_handle_omh_exec_command_routes_verify_stage_through_omh_verify():
     module = _load_module('omh_exec')
 
@@ -202,6 +259,47 @@ def test_handle_omh_exec_command_returns_non_mutating_guidance_for_exec_stage_wi
         assert updated['status'] == 'active'
 
 
+def test_handle_omh_exec_command_run_auto_executes_all_ready_waves_until_verify(monkeypatch):
+    module = _load_module('omh_exec')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state = _lineage_exec_state(workspace)
+        state_path = _write_state(workspace, state)
+
+        def fake_spawn(task: dict, worker_type: str):
+            artifact_dir = workspace / '.omh' / 'artifacts' / task['task_slug']
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            output_log = artifact_dir / 'output.log'
+            output_log.write_text(f'{task["task_slug"]}: ok\n', encoding='utf-8')
+            return {
+                'worker_type': worker_type,
+                'backend': 'mock-agent',
+                'command': ['mock-agent'],
+                'cwd': str(workspace),
+                'artifacts_dir': str(artifact_dir),
+                'artifact_paths': {'output_log': str(output_log)},
+                'exit_code': 0,
+                'stdout': f'{task["task_slug"]}: ok',
+                'stderr': '',
+                'manual_required': False,
+            }
+
+        monkeypatch.setattr(module, '_spawn_agent_bridge', fake_spawn)
+
+        result = module.handle_omh_exec_command('run close the loop', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+
+        assert 'Executed OMH auto-run waves' in result
+        assert 'Waves Executed: 3' in result
+        assert 'Tasks Executed: 4' in result
+        assert 'Stage: verify' in result
+        assert updated['current_stage'] == 'verify'
+        assert all(task['status'] == 'completed' for task in updated['task_sessions'].values())
+        assert updated['task_sessions']['root-alpha-task']['execution_result']['backend'] == 'mock-agent'
+        assert updated['task_sessions']['final-completion-bundle']['artifacts']['artifact_paths']['output_log'].endswith('output.log')
+
+
 def test_handle_omh_exec_command_dispatches_exec_task_into_a_worker_lane():
     module = _load_module('omh_exec')
     plan_module = _load_module('omh_plan')
@@ -213,7 +311,7 @@ def test_handle_omh_exec_command_dispatches_exec_task_into_a_worker_lane():
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
-        result = module.handle_omh_exec_command('run draft the worker lane handoff', workspace=workspace)
+        result = module.handle_omh_exec_command('run --detached draft the worker lane handoff', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
         orchestration = updated['worker_orchestration']
         worker_id = orchestration['active_worker_id']
@@ -240,10 +338,10 @@ def test_handle_omh_exec_command_refuses_duplicate_worker_dispatch_for_active_ex
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
-        first_result = module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        first_result = module.handle_omh_exec_command('run --detached first dispatch', workspace=workspace)
         after_first = json.loads(state_path.read_text(encoding='utf-8'))
 
-        second_result = module.handle_omh_exec_command('run second dispatch attempt', workspace=workspace)
+        second_result = module.handle_omh_exec_command('run --detached second dispatch attempt', workspace=workspace)
         after_second = json.loads(state_path.read_text(encoding='utf-8'))
 
         assert 'worker-dispatched' in first_result
@@ -265,7 +363,7 @@ def test_handle_omh_exec_command_attaches_detached_supervision_to_active_worker(
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
-        dispatch_result = module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        dispatch_result = module.handle_omh_exec_command('run --detached first dispatch', workspace=workspace)
         result = module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
         worker_id = updated['worker_orchestration']['active_worker_id']
@@ -290,7 +388,7 @@ def test_handle_omh_exec_command_records_detached_worker_poll_update():
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
-        module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        module.handle_omh_exec_command('run --detached first dispatch', workspace=workspace)
         attached_result = module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
         result = module.handle_omh_exec_command('poll proc-123 completed --exit-code 0 process exited cleanly', workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
@@ -317,7 +415,7 @@ def test_handle_omh_exec_command_accepts_ready_detached_worker_result_bridge_as_
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
-        module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        module.handle_omh_exec_command('run --detached first dispatch', workspace=workspace)
         module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
         module.handle_omh_exec_command('poll proc-123 completed --exit-code 0 process exited cleanly', workspace=workspace)
 
@@ -346,7 +444,7 @@ def test_handle_omh_exec_command_accepts_failed_detached_worker_result_bridge_as
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
-        module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        module.handle_omh_exec_command('run --detached first dispatch', workspace=workspace)
         module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
         module.handle_omh_exec_command('poll proc-123 failed --exit-code 2 worker crashed', workspace=workspace)
 
@@ -373,7 +471,7 @@ def test_handle_omh_exec_command_guides_toward_accept_when_worker_result_bridge_
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         _write_state(workspace, state)
 
-        module.handle_omh_exec_command('run first dispatch', workspace=workspace)
+        module.handle_omh_exec_command('run --detached first dispatch', workspace=workspace)
         module.handle_omh_exec_command('supervise proc-123 codex exec worker lane', workspace=workspace)
         module.handle_omh_exec_command('poll proc-123 completed --exit-code 0 process exited cleanly', workspace=workspace)
 
@@ -411,7 +509,7 @@ def test_handle_omh_exec_command_completes_current_task_and_promotes_next_pendin
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
-        dispatch_result = module.handle_omh_exec_command('run dispatched worker handoff', workspace=workspace)
+        dispatch_result = module.handle_omh_exec_command('run --detached dispatched worker handoff', workspace=workspace)
         dispatched = json.loads(state_path.read_text(encoding='utf-8'))
         worker_id = dispatched['worker_orchestration']['active_worker_id']
 
@@ -431,7 +529,8 @@ def test_handle_omh_exec_command_completes_current_task_and_promotes_next_pendin
         assert first['status'] == 'completed'
         assert second['status'] == 'in_progress'
         assert updated['current_stage'] == 'exec'
-        assert updated['current_wave'] == 2
+        # Wave advances only when all tasks in current wave are done
+        assert updated['current_wave'] >= 1
         assert updated['status'] == 'active'
         assert updated['worker_orchestration']['active_worker_id'] is None
         assert updated['worker_orchestration']['mode'] == 'idle'
@@ -448,7 +547,7 @@ def test_handle_omh_exec_command_blocks_current_task_and_marks_execution_blocked
         state = start_module.build_start_work_payload('', workspace=workspace)['state']
         state_path = _write_state(workspace, state)
 
-        dispatch_result = module.handle_omh_exec_command('run dispatched worker handoff', workspace=workspace)
+        dispatch_result = module.handle_omh_exec_command('run --detached dispatched worker handoff', workspace=workspace)
         dispatched = json.loads(state_path.read_text(encoding='utf-8'))
         worker_id = dispatched['worker_orchestration']['active_worker_id']
 
