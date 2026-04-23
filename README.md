@@ -42,6 +42,7 @@ That means if the external Claude planning stage is flaky or unavailable, OMH sh
   - `omh-exec`
   - `omh-verify`
   - `omh-fix`
+  - `omh-complete`
 - `intent_gate.py` classifies user intent
 - `route_resolver.py` maps intent + workspace state to OMH internal routes, including the fallback research lane
 - `research_lane.py` fans out research requests into deterministic explore/librarian/oracle specialist prompts
@@ -52,6 +53,11 @@ That means if the external Claude planning stage is flaky or unavailable, OMH sh
 - plan-to-task bridge now extracts acceptance criteria, file targets, and test targets from plan markdown
 - `omh-exec` task-aware router classifies each active task as implement/research/verify before dispatch
 - cross-surface state consistency guard detects drift between task_sessions and worker_sessions
+- `omh-exec` now supports wave-aware scheduling for lineage-shaped task graphs, including topological wave computation, bounded parallel wave execution, and fail-fast blocking when a wave fails
+- execution workers can bridge into external CLIs (`codex`, `claude`, `opencode`) with per-task prompts, persisted stdout/stderr logs, and deterministic manual fallback when no bridge runtime exists
+- verification now records task-level acceptance evidence, retry counts, and escalation requirements so `omh-verify` can distinguish verified / partial / failed outcomes for each completed task
+- status surfaces expose task artifact paths and dependency-tree lineage so operator re-entry shows outputs, wave shape, and completion context without opening the raw state JSON
+- `omh-complete` generates a final completion bundle with archived state, copied task artifacts, lineage summary, and a completion-facing next action once the execution reaches a fully verified terminal state
 
 ## Still missing
 
