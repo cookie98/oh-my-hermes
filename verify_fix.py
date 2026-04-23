@@ -53,6 +53,9 @@ def record_verification_result(
     next_state = dict(state)
     current_wave = next_state.get('current_wave') or 1
 
+    lineage = next_state.get('lineage', {})
+    total_waves = lineage.get('total_waves', 1)
+
     if passed:
         handoff_path = _write_handoff(
             workspace=workspace,
@@ -68,7 +71,8 @@ def record_verification_result(
         next_state['current_stage'] = 'verify'
         next_state['verified_at'] = stamp
     else:
-        next_wave = int(current_wave) + 1
+        # Fix stage uses total_waves + 1 as a dedicated wave
+        fix_wave = total_waves + 1
         handoff_path = _write_handoff(
             workspace=workspace,
             filename='verify.md',
@@ -77,11 +81,11 @@ def record_verification_result(
             stage='verify',
             outcome='failed',
             summary=summary,
-            wave=next_wave,
+            wave=fix_wave,
         )
         next_state['status'] = 'active'
         next_state['current_stage'] = 'fix'
-        next_state['current_wave'] = next_wave
+        next_state['current_wave'] = fix_wave
         next_state['verification_failed_at'] = stamp
 
     next_state['last_handoff'] = str(handoff_path)
@@ -98,6 +102,8 @@ def record_fix_result(
 ) -> Dict[str, Any]:
     stamp = now or _now_iso()
     next_state = dict(state)
+    lineage = next_state.get('lineage', {})
+    total_waves = lineage.get('total_waves', 1)
     current_wave = next_state.get('current_wave') or 1
     handoff_path = _write_handoff(
         workspace=workspace,
@@ -111,6 +117,8 @@ def record_fix_result(
     )
     next_state['status'] = 'active'
     next_state['current_stage'] = 'verify'
+    # After fix, reset to total_waves (re-verify from last wave)
+    next_state['current_wave'] = total_waves
     next_state['fixed_at'] = stamp
     next_state['last_handoff'] = str(handoff_path)
     next_state['updated_at'] = stamp

@@ -5,7 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-from .task_sessions import summarize_task_sessions
+try:
+    from .task_sessions import summarize_task_sessions
+except ImportError:  # pragma: no cover - support direct module imports in tests
+    from task_sessions import summarize_task_sessions
 
 DEFAULT_WORKER_ORCHESTRATION: Dict[str, Any] = {
     'active_worker_id': None,

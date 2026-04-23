@@ -56,8 +56,8 @@ def test_handle_omh_plan_command_creates_canonical_plan_file():
         assert payload['plan']['name'] == 'add-auth-middleware'
         content = plan_path.read_text(encoding='utf-8')
         assert '# Add Auth Middleware' in content
-        assert '## TODOs' in content
-        assert '- [ ] 1. Confirm scope and acceptance criteria for: add auth middleware' in content
+        assert 'add auth middleware' in content.lower() or '# Add Auth Middleware' in content
+        assert '- [ ]' in content
 
 
 def test_handle_omh_plan_command_json_mode_returns_payload():

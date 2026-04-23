@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from .atlas_state import discover_canonical_plans, get_workspace_root
+from .intent_gate import classify_intent
 
 _SLUG_NON_ALNUM_RE = re.compile(r'[^a-z0-9]+')
 
@@ -66,22 +67,180 @@ This initial canonical plan is a deterministic scaffold. It is intentionally con
 - Workers may append notes or handoffs, but should not rewrite this plan during execution.
 - Verification evidence is required before completion claims.
 
-## TODOs
+## Task 1: Scope & Acceptance Criteria
 
-- [ ] 1. Confirm scope and acceptance criteria for: {intent}
-- [ ] 2. Identify the primary files, modules, or surfaces likely to change
-- [ ] 3. Decide whether supporting research/exploration is needed before implementation
-- [ ] 4. Implement the required change in the smallest safe sequence
-- [ ] 5. Run focused verification for the changed surfaces
-- [ ] 6. Run broader regression checks if the blast radius justifies it
-- [ ] 7. Summarize outcomes, blockers, and next actions
+**blockedBy:** `[]`
+**blocks:** `[T2, T3]`
+**parentID:** `null`
 
-## Final Verification Wave
+- [ ] Define the precise user-visible behavior for: {intent}
+- [ ] Write acceptance criteria as observable outcomes
+- [ ] Identify non-goals and risk boundaries
+
+## Task 2: Identify Surfaces & Research
+
+**blockedBy:** `[T1]`
+**blocks:** `[T4]`
+**parentID:** `null`
+
+- [ ] Identify the primary files, modules, or surfaces likely to change
+- [ ] Decide whether supporting research/exploration is needed before implementation
+- [ ] Record any file placeholders to update
+
+## Task 3: Implement
+
+**blockedBy:** `[T1]`
+**blocks:** `[T4]`
+**parentID:** `null`
+
+- [ ] Implement the required change in the smallest safe sequence
+- [ ] Run focused verification for the changed surfaces
+
+## Task 4: Regression & Finalize
+
+**blockedBy:** `[T2, T3]`
+**blocks:** `[T5]`
+**parentID:** `null`
+
+- [ ] Run broader regression checks if the blast radius justifies it
+- [ ] Summarize outcomes, blockers, and next actions
+
+## Task 5: Final Verification Wave
+
+**blockedBy:** `[T4]`
+**blocks:** `[]`
+**parentID:** `null`
 
 - [ ] F1. Re-read the original intent and confirm every stated requirement is covered
 - [ ] F2. Verify commands/tests output supports the completion claim
 - [ ] F3. Record any remaining blockers or uncertainty explicitly
 '''
+
+
+def _render_plan_for_category(*, intent: str, slug: str, workspace: Path, category: str) -> str:
+    title = _titleize_slug(slug)
+    if category in {'implementation', 'fix'}:
+        return f'''# {title}
+
+> Intent-aware OMH implementation plan
+
+**Plan Name:** `{slug}`
+**Workspace:** `{workspace}`
+**Source Intent:** {intent}
+**Plan Category:** {category}
+
+## Goal
+
+**blockedBy:** `[]`
+**blocks:** `[T1, T2]`
+**parentID:** `null`
+
+- [ ] Restate the requested change in one sentence
+- [ ] Confirm the acceptance criteria and non-goals
+- [ ] Identify the primary files likely to change: `{workspace}/path/to/primary_module.py`
+
+## Task 1: Architecture & Tech Stack
+
+**blockedBy:** `[T0]`
+**blocks:** `[T3]`
+**parentID:** `null`
+
+- [ ] Describe the current flow and the proposed control flow
+- [ ] Call out integration points, state, and dependencies
+- [ ] Confirm runtime, framework, and test tooling constraints
+- [ ] Record any file placeholders to update:
+  - `{workspace}/path/to/primary_module.py`
+  - `{workspace}/path/to/test_primary_module.py`
+
+## Task 2: Scope & Acceptance Criteria
+
+**blockedBy:** `[T0]`
+**blocks:** `[T3]`
+**parentID:** `null`
+
+- [ ] Define the precise user-visible behavior
+- [ ] Write acceptance criteria as observable outcomes
+- [ ] Identify non-goals and risk boundaries
+- [ ] File placeholder: `{workspace}/docs/{slug}-scope.md`
+
+## Task 3: Implementation with TDD
+
+**blockedBy:** `[T1, T2]`
+**blocks:** `[T4]`
+**parentID:** `null`
+
+- [ ] Write or update a failing test first
+- [ ] Implement the smallest change needed to satisfy the test
+- [ ] Refactor only after the test is green
+- [ ] Update the relevant files:
+  - `{workspace}/path/to/primary_module.py`
+  - `{workspace}/path/to/tests/test_primary_module.py`
+
+## Task 4: Verification
+
+**blockedBy:** `[T3]`
+**blocks:** `[T5]`
+**parentID:** `null`
+
+- [ ] Run focused tests for the touched behavior
+- [ ] Run any adjacent regression tests that protect the change
+- [ ] Capture evidence that the acceptance criteria are met
+- [ ] File placeholder: `{workspace}/artifacts/{slug}-verification.log`
+
+## Task 5: Final Verification Wave
+
+**blockedBy:** `[T4]`
+**blocks:** `[]`
+**parentID:** `null`
+
+- [ ] Re-read the original request and confirm every requirement is covered
+- [ ] Verify the plan references the right files and surfaces
+- [ ] Record any remaining caveats or follow-up work explicitly
+'''
+
+    if category in {'research', 'investigation', 'evaluation'}:
+        return f'''# {title}
+
+> Intent-aware OMH research plan
+
+**Plan Name:** `{slug}`
+**Workspace:** `{workspace}`
+**Source Intent:** {intent}
+**Plan Category:** {category}
+
+## Task 0: Research Questions
+
+**blockedBy:** `[]`
+**blocks:** `[T1]`
+**parentID:** `null`
+
+- [ ] R1. What is the current state of the target area or problem?
+- [ ] R2. What options, constraints, or trade-offs should be evaluated?
+- [ ] R3. What evidence is needed to choose the safest next step?
+
+## Task 1: Deliverables
+
+**blockedBy:** `[T0]`
+**blocks:** `[T2]`
+**parentID:** `null`
+
+- [ ] Summarize findings in a concise decision note
+- [ ] Capture references, data points, or reproduction evidence
+- [ ] Identify any follow-up implementation or verification tasks
+- [ ] File placeholder: `{workspace}/docs/{slug}-research-notes.md`
+
+## Task 2: Final Verification
+
+**blockedBy:** `[T1]`
+**blocks:** `[]`
+**parentID:** `null`
+
+- [ ] Confirm every research question was answered or explicitly marked unknown
+- [ ] Ensure the deliverables are saved and easy to hand off
+- [ ] Record unresolved risks or next actions
+'''
+
+    return _render_plan_markdown(intent=intent, slug=slug, workspace=workspace)
 
 
 def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[str, Any]:
@@ -91,6 +250,8 @@ def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[st
         raise ValueError('intent is required')
 
     slug = _slugify(normalized_intent)
+    intent_decision = classify_intent(normalized_intent)
+    intent_category = intent_decision.intent
     plan_dir = _plan_dir(root)
     plan_dir.mkdir(parents=True, exist_ok=True)
     plan_path = _plan_path_for_intent(normalized_intent, root)
@@ -98,7 +259,7 @@ def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[st
     created = False
     if not plan_path.exists():
         plan_path.write_text(
-            _render_plan_markdown(intent=normalized_intent, slug=slug, workspace=root),
+            _render_plan_for_category(intent=normalized_intent, slug=slug, workspace=root, category=intent_category),
             encoding='utf-8',
         )
         created = True
@@ -108,6 +269,7 @@ def build_plan_payload(intent: str, *, workspace: Path | None = None) -> Dict[st
         'created': created,
         'planning_backend': 'hermes-native',
         'intent': normalized_intent,
+        'intent_category': intent_category,
         'plan': {
             'name': slug,
             'title': _titleize_slug(slug),

@@ -68,6 +68,13 @@ def _write_state(workspace: Path, state: dict) -> Path:
     return state_path
 
 
+def _preferred_task_key(state: dict, preferred: str, index: int) -> str:
+    task_keys = list(state['task_sessions'].keys())
+    if preferred in state['task_sessions']:
+        return preferred
+    return task_keys[index]
+
+
 def _seed_exec_state(workspace: Path) -> dict:
     plan_module = _load_module('omh_plan')
     start_module = _load_module('omh_start_work')
@@ -142,8 +149,10 @@ def test_handle_omh_ulw_command_records_natural_language_exec_followup_through_o
 
         result = module.handle_omh_ulw_command('scope confirmed and ready for the next task', ctx=None, workspace=workspace)
         updated = json.loads(state_path.read_text(encoding='utf-8'))
-        first = updated['task_sessions']['confirm-scope-and-acceptance-criteria-for-add-auth-middleware']
-        second = updated['task_sessions']['identify-the-primary-files-modules-or-surfaces-likely-to-change']
+        first_task_key = _preferred_task_key(updated, 'T1', 0)
+        second_task_key = _preferred_task_key(updated, 'T2', 1)
+        first = updated['task_sessions'][first_task_key]
+        second = updated['task_sessions'][second_task_key]
 
         assert 'Recorded OMH exec task transition' in result
         assert 'Outcome: completed' in result
@@ -180,14 +189,15 @@ def test_handle_omh_ulw_command_surfaces_active_worker_waiting_for_result_in_sta
         state['worker_orchestration'] = {
             **state['worker_orchestration'],
             'mode': 'dispatching',
-            'active_worker_id': 'worker-confirm-scope-and-acceptance-criteria-for-add-auth-middleware-wave-1',
-            'current_task_slug': 'confirm-scope-and-acceptance-criteria-for-add-auth-middleware',
+            'active_worker_id': f'worker-{_preferred_task_key(state, "T1", 0)}-wave-1',
+            'current_task_slug': _preferred_task_key(state, 'T1', 0),
         }
         _write_state(workspace, state)
 
+        first_task_key = _preferred_task_key(state, 'T1', 0)
         result = module.handle_omh_ulw_command('status', ctx=None, workspace=workspace)
 
-        assert 'Worker Orchestration: mode=dispatching, active_worker_id=worker-confirm-scope-and-acceptance-criteria-for-add-auth-middleware-wave-1, current_task_slug=confirm-scope-and-acceptance-criteria-for-add-auth-middleware' in result
+        assert f'Worker Orchestration: mode=dispatching, active_worker_id=worker-{first_task_key}-wave-1, current_task_slug={first_task_key}' in result
         assert 'Awaiting worker result.' in result
         assert 'Execution is in progress.' not in result
 

@@ -14,6 +14,7 @@ from .continuation_hooks import (
     should_inject_continuation_context,
     should_inject_idle_continuation_context,
 )
+from .omh_complete import handle_omh_complete_command
 from .omh_exec import handle_omh_exec_command
 from .omh_fix import handle_omh_fix_command
 from .omh_plan import handle_omh_plan_command
@@ -227,6 +228,7 @@ def register(ctx: Any) -> None:
     ctx.register_command('omh-start-work', handle_omh_start_work_command, description='Bootstrap OMH execution from a canonical plan. Supports `--json` and optional `--worktree`.')
     ctx.register_command('omh-ulw', _omh_ulw_command_factory(ctx), description='OMH ultrawork frontdoor: classify intent, route, and continue in Hermes-first mode.')
     ctx.register_command('omh-status', _omh_status_command_factory(ctx), description='Inspect OMH execution state in text mode or with `--json`.')
+    ctx.register_command('omh-complete', handle_omh_complete_command, description='Generate an OMH completion bundle, archive state/artifacts, and finalize the execution record.')
     ctx.register_command('omh-exec', handle_omh_exec_command, description='Internal OMH exec driver: continue the current stage and route through resume/verify/fix surfaces.')
     ctx.register_command('omh-verify', handle_omh_verify_command, description='Record an internal OMH verification result via `omh-verify <pass|fail> [summary...]`.')
     ctx.register_command('omh-fix', handle_omh_fix_command, description='Record an internal OMH remediation result and re-enter verify stage.')

