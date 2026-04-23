@@ -21,6 +21,9 @@ _TASK_LABEL_PREFIX_RE = re.compile(r'^(?:F?\d+\.)\s*')
 _ACCEPTANCE_RE = re.compile(r'^[-*]\s*(?:AC|Acceptance Criteria?)[:\s]+(.+)$', re.IGNORECASE)
 _FILE_TARGET_RE = re.compile(r'^[-*]\s*(?:File|Modify|Create)[:\s]+(.+)$', re.IGNORECASE)
 _TEST_TARGET_RE = re.compile(r'^[-*]\s*(?:Test|Test file)[:\s]+(.+)$', re.IGNORECASE)
+_LINEAGE_BLOCKED_BY_RE = re.compile(r'^\*\*blockedBy:\*\*\s*`?\[([^\]]*)\]`?', re.IGNORECASE)
+_LINEAGE_BLOCKS_RE = re.compile(r'^\*\*blocks:\*\*\s*`?\[([^\]]*)\]`?', re.IGNORECASE)
+_LINEAGE_PARENT_RE = re.compile(r'^\*\*parentID:\*\*\s*`?([^`\s]+)`?', re.IGNORECASE)
 _SLUG_NON_ALNUM_RE = re.compile(r'[^a-z0-9]+')
 
 
@@ -110,6 +113,8 @@ def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
         'files': [],
         'tests': [],
     }
+    task_counter = 0
+    slug_to_tx: Dict[str, str] = {}
 
     def flush_current_task() -> None:
         nonlocal current_slug, current_task
@@ -122,6 +127,12 @@ def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
         text_value = value.strip()
         if text_value:
             target[key].append(text_value)
+
+    def parse_lineage_list(raw: str) -> List[str]:
+        if not raw.strip():
+            return []
+        parts = [p.strip().strip('"\'') for p in raw.split(',')]
+        return [p for p in parts if p]
 
     for line in lines:
         stripped = line.strip()
@@ -142,6 +153,9 @@ def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
                 continue
             slug = _slugify(label)
             current_slug = slug
+            task_counter += 1
+            tx_id = f'T{task_counter}'
+            slug_to_tx[slug] = tx_id
             current_task = {
                 'task_slug': slug,
                 'label': label,
@@ -149,6 +163,9 @@ def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
                 'acceptance': [],
                 'files': [],
                 'tests': [],
+                'blockedBy': [],
+                'blocks': [],
+                'parentID': None,
             }
             if any(leading_metadata.values()):
                 current_task['acceptance'].extend(leading_metadata['acceptance'])
@@ -179,17 +196,102 @@ def _extract_execution_tasks(plan_path: Path) -> Dict[str, Any]:
             append_metadata(target, 'tests', test_target.group(1))
             continue
 
+        blocked_by = _LINEAGE_BLOCKED_BY_RE.match(stripped)
+        if blocked_by and current_task is not None:
+            current_task['blockedBy'] = parse_lineage_list(blocked_by.group(1))
+            continue
+
+        blocks = _LINEAGE_BLOCKS_RE.match(stripped)
+        if blocks and current_task is not None:
+            current_task['blocks'] = parse_lineage_list(blocks.group(1))
+            continue
+
+        parent = _LINEAGE_PARENT_RE.match(stripped)
+        if parent and current_task is not None:
+            current_task['parentID'] = parent.group(1) or None
+            continue
+
     flush_current_task()
+
+    # Resolve symbolic blockedBy/blocks (e.g., T1, T2) to actual task slugs
+    tx_to_slug = {v: k for k, v in slug_to_tx.items()}
+    for slug, task in task_sessions.items():
+        resolved_blocked = []
+        for ref in task.get('blockedBy', []):
+            if ref in tx_to_slug:
+                resolved_blocked.append(tx_to_slug[ref])
+            elif ref in task_sessions:
+                resolved_blocked.append(ref)
+            elif ref.lower() == 'null':
+                continue
+        task['blockedBy'] = resolved_blocked
+
+        resolved_blocks = []
+        for ref in task.get('blocks', []):
+            if ref in tx_to_slug:
+                resolved_blocks.append(tx_to_slug[ref])
+            elif ref in task_sessions:
+                resolved_blocks.append(ref)
+            elif ref.lower() == 'null':
+                continue
+        task['blocks'] = resolved_blocks
+
     return _TaskSessionMap(task_sessions)
+
+
+def _compute_waves(task_sessions: Dict[str, Any]) -> List[List[str]]:
+    """Topologically sort tasks into waves based on blockedBy dependencies.
+    
+    Wave 0 = tasks with no blockedBy (or empty blockedBy)
+    Wave N = tasks whose blockedBy tasks are all in previous waves
+    """
+    if not task_sessions:
+        return []
+    
+    # Build adjacency: task -> set of tasks it depends on
+    dependencies: Dict[str, set[str]] = {}
+    for slug, task in task_sessions.items():
+        blocked = set(task.get('blockedBy', []))
+        # Only keep dependencies that exist in our task set
+        dependencies[slug] = {b for b in blocked if b in task_sessions}
+    
+    waves: List[List[str]] = []
+    completed: set[str] = set()
+    remaining = set(task_sessions.keys())
+    
+    while remaining:
+        # Find tasks whose all dependencies are in completed
+        ready = {slug for slug in remaining if dependencies[slug] <= completed}
+        if not ready:
+            # Cycle detected or orphaned dependency — break to avoid infinite loop
+            # Put remaining tasks in a final wave
+            if remaining:
+                waves.append(sorted(remaining))
+            break
+        
+        waves.append(sorted(ready))
+        completed |= ready
+        remaining -= ready
+    
+    return waves
 
 
 def _build_initial_state(*, workspace: Path, plan_path: Path, plan_name: str, worktree_path: str | None) -> Dict[str, Any]:
     now = _now_iso()
+    extracted_tasks = _extract_execution_tasks(plan_path)
+    waves = _compute_waves(extracted_tasks)
     task_sessions = seed_task_sessions(
-        _extract_execution_tasks(plan_path),
+        extracted_tasks,
         now=now,
-        current_wave=1,
+        current_wave=1 if waves else None,
     )
+    
+    # Assign wave numbers to each task session
+    for wave_idx, wave_tasks in enumerate(waves, start=1):
+        for slug in wave_tasks:
+            if slug in task_sessions:
+                task_sessions[slug]['wave'] = wave_idx
+    
     return {
         'version': 1,
         'active_plan': str(plan_path),
@@ -198,11 +300,15 @@ def _build_initial_state(*, workspace: Path, plan_path: Path, plan_name: str, wo
         'updated_at': now,
         'status': 'active',
         'current_stage': 'exec',
-        'current_wave': 1 if task_sessions else None,
+        'current_wave': 1 if waves else None,
         'session_ids': [],
         'session_origins': {},
         'worktree_path': worktree_path,
         'task_sessions': task_sessions,
+        'lineage': {
+            'waves': waves,
+            'total_waves': len(waves),
+        },
         'worker_orchestration': normalize_worker_orchestration({}),
         'last_handoff': None,
         'notepad_dir': str(_notepad_dir(workspace, plan_name)),

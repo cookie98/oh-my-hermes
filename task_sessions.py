@@ -38,6 +38,32 @@ def _normalize_list(value: Any) -> list[str]:
     return [text] if text else []
 
 
+
+def _merge_unique(existing: Any, additions: Any) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for item in [*_normalize_list(existing), *_normalize_list(additions)]:
+        if item in seen:
+            continue
+        seen.add(item)
+        merged.append(item)
+    return merged
+
+
+
+def merge_lineage_references(
+    task_session: Dict[str, Any],
+    *,
+    add_blocks: Any = None,
+    add_blocked_by: Any = None,
+) -> Dict[str, Any]:
+    merged = dict(task_session or {})
+    merged['blocks'] = _merge_unique(merged.get('blocks'), add_blocks)
+    merged['blockedBy'] = _merge_unique(merged.get('blockedBy'), add_blocked_by)
+    return merged
+
+
+
 def normalize_task_sessions(task_sessions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     normalized: Dict[str, Dict[str, Any]] = {}
     for key, payload in (task_sessions or {}).items():
@@ -50,6 +76,8 @@ def normalize_task_sessions(task_sessions: Dict[str, Any]) -> Dict[str, Dict[str
         entry['acceptance'] = _normalize_list(entry.get('acceptance'))
         entry['files'] = _normalize_list(entry.get('files'))
         entry['tests'] = _normalize_list(entry.get('tests'))
+        entry['blocks'] = _normalize_list(entry.get('blocks'))
+        entry['blockedBy'] = _normalize_list(entry.get('blockedBy'))
         normalized[slug] = entry
     return normalized
 
