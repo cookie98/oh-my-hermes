@@ -59,6 +59,20 @@ def get_plan_dir(workspace: Path | None = None) -> Path:
     return root / PLAN_DIR_RELATIVE_PATH
 
 
+
+def write_json_atomically(path: Path, payload: Dict[str, Any]) -> Path:
+    target = Path(path).expanduser()
+    temp_path = target.with_name(f'{target.name}.tmp')
+    try:
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        temp_path.replace(target)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+    return target
+
+
+
 def discover_canonical_plans(workspace: Path | None = None) -> List[Path]:
     plan_dir = get_plan_dir(workspace)
     if not plan_dir.exists() or not plan_dir.is_dir():
@@ -322,7 +336,7 @@ def read_atlas_state(workspace: Path | None = None) -> AtlasStateSnapshot:
     posture = lifecycle or 'broken'
     if lifecycle in {'active', 'blocked'} and progress.is_complete:
         posture = 'stale'
-    elif lifecycle == 'complete' and not (progress.is_complete or task_sessions_terminal):
+    elif lifecycle == 'complete' and ((bool(task_sessions) and not task_sessions_terminal) or (not task_sessions and not progress.is_complete)):
         posture = 'stale'
     elif lifecycle in {'failed', 'cancelled'}:
         posture = lifecycle
