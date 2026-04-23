@@ -178,6 +178,53 @@ def test_handle_omh_complete_command_generates_summary_and_archives_state_and_ar
         assert updated['plan_locked'] is False
 
 
+def test_omh_complete_blocks_bundle_when_task_acceptance_verification_failed():
+    complete_module = _load_module('omh_complete')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state = _complete_ready_state(workspace)
+        state['task_sessions']['task-a']['verification_status'] = 'FAILED'
+        state['task_sessions']['task-a']['verification_missing'] = ['output contains dry-run evidence']
+        state['task_sessions']['task-a']['verification_evidence'] = ['missing: output contains dry-run evidence']
+        state_path = _write_state(workspace, state)
+
+        payload = complete_module.build_complete_payload('', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+
+        assert payload['mode'] == 'error'
+        assert payload['verification_gate']['blocked'] is True
+        assert 'task-a' in payload['reason']
+        assert 'FAILED' in payload['reason']
+        assert 'completion' not in updated
+        assert not (workspace / '.omh' / 'completed').exists()
+
+
+def test_omh_complete_blocks_bundle_when_task_acceptance_verification_is_partial_or_escalated():
+    complete_module = _load_module('omh_complete')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state = _complete_ready_state(workspace)
+        state['task_sessions']['task-a']['verification_status'] = 'PARTIAL'
+        state['task_sessions']['task-a']['verification_missing'] = ['full summary recorded']
+        state['task_sessions']['task-b']['verification_status'] = 'VERIFIED'
+        state['task_sessions']['task-b']['verification_escalation_required'] = True
+        state_path = _write_state(workspace, state)
+
+        payload = complete_module.build_complete_payload('', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+
+        assert payload['mode'] == 'error'
+        assert payload['verification_gate']['blocked'] is True
+        assert 'task-a' in payload['reason']
+        assert 'PARTIAL' in payload['reason']
+        assert 'task-b' in payload['reason']
+        assert 'escalation' in payload['reason'].lower()
+        assert 'completion' not in updated
+        assert not (workspace / '.omh' / 'completed').exists()
+
+
 def test_register_includes_omh_complete_command():
     module = _load_module('__init__')
     ctx = _FakeCtx()

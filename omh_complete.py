@@ -8,8 +8,10 @@ from typing import Any, Dict
 
 try:
     from .atlas_state import get_state_path, get_workspace_root, read_atlas_state, write_json_atomically
+    from .verification_gate import build_verification_gate
 except ImportError:  # pragma: no cover
     from atlas_state import get_state_path, get_workspace_root, read_atlas_state, write_json_atomically
+    from verification_gate import build_verification_gate
 
 
 
@@ -132,8 +134,17 @@ def build_complete_payload(raw_args: str = '', *, workspace: Path | None = None)
             'reason': 'OMH completion bundle can run only after execution reaches complete posture.',
         }
 
-    stamp = _now_iso()
     state = dict(snapshot.state)
+    verification_gate = build_verification_gate(state, action='completion')
+    if verification_gate['blocked']:
+        return {
+            'mode': 'error',
+            'workspace': str(root),
+            'reason': verification_gate['reason'],
+            'verification_gate': verification_gate,
+        }
+
+    stamp = _now_iso()
     bundle_dir = _bundle_dir(root, str(state.get('plan_name') or 'omh-plan'), stamp)
     bundle_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(get_state_path(root), bundle_dir / 'atlas-state.json')
