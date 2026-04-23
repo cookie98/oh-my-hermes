@@ -8,9 +8,11 @@ from typing import Any, Dict, Tuple
 
 try:
     from .atlas_state import get_state_path, get_workspace_root, read_atlas_state
+    from .verification_gate import build_verification_gate
     from .verify_fix import record_verification_result
 except ImportError:  # pragma: no cover - support direct module imports in tests
     from atlas_state import get_state_path, get_workspace_root, read_atlas_state
+    from verification_gate import build_verification_gate
     from verify_fix import record_verification_result
 
 
@@ -241,19 +243,27 @@ def build_verify_payload(raw_args: str = '', *, workspace: Path | None = None, t
             result={'summary': summary or '', 'outcome': outcome},
         )
 
+    verification_gate = build_verification_gate(next_state, action='verification pass')
+    final_outcome = 'fail' if outcome == 'pass' and verification_gate['blocked'] else outcome
+    verification_summary = summary
+    if final_outcome == 'fail' and outcome == 'pass' and verification_gate['reason']:
+        verification_summary = f'{summary}\n\n{verification_gate["reason"]}' if summary else verification_gate['reason']
+
     next_state = record_verification_result(
         next_state,
         workspace=root,
-        passed=(outcome == 'pass'),
-        summary=summary,
+        passed=(final_outcome == 'pass'),
+        summary=verification_summary,
     )
     state_path = _write_state(root, next_state)
     return {
         'mode': 'recorded',
         'workspace': str(root),
         'state_path': str(state_path),
-        'outcome': outcome,
+        'outcome': final_outcome,
+        'requested_outcome': outcome,
         'summary': summary,
+        'verification_gate': verification_gate,
         'state': next_state,
     }
 
