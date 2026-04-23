@@ -36,6 +36,31 @@ def _origin_counts(session_origins: Dict[str, Any]) -> Dict[str, int]:
     return counts
 
 
+
+def _task_artifacts(task_sessions: Dict[str, Any]) -> Dict[str, Any]:
+    artifacts: Dict[str, Any] = {}
+    for slug, payload in (task_sessions or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        artifact_payload = payload.get('artifacts')
+        if isinstance(artifact_payload, dict):
+            artifacts[slug] = artifact_payload
+    return artifacts
+
+
+
+def _dependency_tree(task_sessions: Dict[str, Any]) -> List[str]:
+    edges: list[str] = []
+    for slug, payload in (task_sessions or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        for dep in payload.get('blocks') or []:
+            dep_slug = str(dep).strip()
+            if dep_slug:
+                edges.append(f'{slug} -> {dep_slug}')
+    return sorted(dict.fromkeys(edges))
+
+
 def build_status_payload(
     workspace: Path | None = None,
     *,
@@ -84,6 +109,8 @@ def build_status_payload(
             'origins': _origin_counts(session_origins),
         },
         'task_sessions': task_session_summary,
+        'task_artifacts': _task_artifacts(task_sessions),
+        'dependency_tree': _dependency_tree(task_sessions),
         'worker_orchestration': {
             'mode': worker_orchestration.get('mode'),
             'active_worker_id': worker_orchestration.get('active_worker_id'),
@@ -120,6 +147,7 @@ def build_status_payload(
             'exists': handoff_path.exists() if handoff_path else None,
         },
         'updated_at': state.get('updated_at') or state.get('started_at'),
+        'suggested_command': 'omh-complete' if snapshot.posture == 'complete' and snapshot.lifecycle == 'complete' else None,
         'warnings': list(snapshot.warnings),
         'errors': list(snapshot.errors),
         'consistency_warnings': list(snapshot.consistency_warnings),
@@ -221,6 +249,25 @@ def _worker_activity_message(payload: Dict[str, Any]) -> str:
     return 'Execution is in progress.'
 
 
+
+def _artifact_lines(payload: Dict[str, Any]) -> List[str]:
+    lines: List[str] = []
+    task_artifacts = payload.get('task_artifacts') or {}
+    if task_artifacts:
+        lines.append('Task Artifacts:')
+        for task_slug in sorted(task_artifacts.keys()):
+            artifact_paths = ((task_artifacts.get(task_slug) or {}).get('artifact_paths') or {})
+            rendered = ', '.join(f'{name}={path}' for name, path in sorted(artifact_paths.items())) or 'none'
+            lines.append(f'  - {task_slug}: {rendered}')
+    dependency_tree = payload.get('dependency_tree') or []
+    if dependency_tree:
+        lines.append('Dependency Tree:')
+        for edge in dependency_tree:
+            lines.append(f'  - {edge}')
+    return lines
+
+
+
 def render_status_text(payload: Dict[str, Any]) -> str:
     workspace = Path(str(payload.get('workspace') or get_workspace_root()))
     posture = payload.get('posture')
@@ -290,6 +337,7 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append('State Consistency Warnings:')
             for w in payload.get('consistency_warnings') or []:
                 lines.append(f'  - {w}')
+        lines.extend(_artifact_lines(payload))
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
@@ -337,6 +385,7 @@ def render_status_text(payload: Dict[str, Any]) -> str:
             lines.append('State Consistency Warnings:')
             for w in payload.get('consistency_warnings') or []:
                 lines.append(f'  - {w}')
+        lines.extend(_artifact_lines(payload))
         lines.extend([
             f'Worktree: {worktree}',
             f'Last Handoff: {handoff}',
@@ -374,15 +423,20 @@ def render_status_text(payload: Dict[str, Any]) -> str:
         )
 
     if posture in {'complete', 'failed', 'cancelled'}:
-        return (
-            'OMH Execution Status\n\n'
-            f'Plan: {plan_name}\n'
-            f'Lifecycle: {lifecycle}\n'
-            f'Posture: {posture}\n'
-            f'Progress: {progress}\n'
-            f'Active Tasks: {active_tasks}\n'
-            f'Updated: {updated_at}'
-        )
+        lines = [
+            'OMH Execution Status',
+            '',
+            f'Plan: {plan_name}',
+            f'Lifecycle: {lifecycle}',
+            f'Posture: {posture}',
+            f'Progress: {progress}',
+            f'Active Tasks: {active_tasks}',
+            f'Updated: {updated_at}',
+        ]
+        suggested_command = payload.get('suggested_command')
+        if suggested_command:
+            lines.extend(['', f'Next Action: Run `{suggested_command}`'])
+        return '\n'.join(lines)
 
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
