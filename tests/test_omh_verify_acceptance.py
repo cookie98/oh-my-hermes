@@ -207,3 +207,88 @@ def test_build_verify_payload_records_acceptance_verification_metadata_for_targe
         assert session['verification_retry_count'] == 0
         assert session['verification_escalation_required'] is False
         assert session['verification_evidence']
+
+
+def test_build_verify_payload_routes_pass_with_failed_task_acceptance_back_to_fix_stage():
+    module = _load_module('omh_verify')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state = {
+            'version': 1,
+            'active_plan': str(workspace / '.omh' / 'plans' / 'sample.md'),
+            'plan_name': 'sample',
+            'started_at': '2026-04-22T06:00:00Z',
+            'updated_at': '2026-04-22T06:00:00Z',
+            'status': 'active',
+            'current_stage': 'verify',
+            'current_wave': 2,
+            'lineage': {'total_waves': 2},
+            'task_sessions': {
+                'auth-check': {
+                    'task_slug': 'auth-check',
+                    'label': 'Auth check',
+                    'status': 'completed',
+                    'completed_at': '2026-04-22T06:10:00Z',
+                    'acceptance': [
+                        'login returns 401 without token',
+                    ],
+                }
+            },
+        }
+        state_path = _write_state(workspace, state)
+
+        payload = module.build_verify_payload('pass docs only', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+        session = updated['task_sessions']['auth-check']
+
+        assert payload['mode'] == 'recorded'
+        assert payload['outcome'] == 'fail'
+        assert payload['verification_gate']['blocked'] is True
+        assert session['verification_status'] == 'FAILED'
+        assert updated['status'] == 'active'
+        assert updated['current_stage'] == 'fix'
+        assert updated['current_wave'] == 3
+        assert 'verification_failed_at' in updated
+
+
+def test_build_verify_payload_routes_pass_with_partial_task_acceptance_back_to_fix_stage():
+    module = _load_module('omh_verify')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        state = {
+            'version': 1,
+            'active_plan': str(workspace / '.omh' / 'plans' / 'sample.md'),
+            'plan_name': 'sample',
+            'started_at': '2026-04-22T06:00:00Z',
+            'updated_at': '2026-04-22T06:00:00Z',
+            'status': 'active',
+            'current_stage': 'verify',
+            'current_wave': 2,
+            'lineage': {'total_waves': 2},
+            'task_sessions': {
+                'auth-check': {
+                    'task_slug': 'auth-check',
+                    'label': 'Auth check',
+                    'status': 'completed',
+                    'completed_at': '2026-04-22T06:10:00Z',
+                    'acceptance': [
+                        'login returns 401 without token',
+                        'login returns 200 with valid token',
+                    ],
+                }
+            },
+        }
+        state_path = _write_state(workspace, state)
+
+        payload = module.build_verify_payload('pass login returns 401 without token', workspace=workspace)
+        updated = json.loads(state_path.read_text(encoding='utf-8'))
+        session = updated['task_sessions']['auth-check']
+
+        assert payload['mode'] == 'recorded'
+        assert payload['outcome'] == 'fail'
+        assert payload['verification_gate']['blocked'] is True
+        assert session['verification_status'] == 'PARTIAL'
+        assert updated['status'] == 'active'
+        assert updated['current_stage'] == 'fix'
