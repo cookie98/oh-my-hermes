@@ -56,6 +56,34 @@ def test_handle_omh_start_work_returns_usage_on_empty_args_when_no_plan_can_be_i
         assert 'Run `omh-plan` first, then retry `omh-start-work`.' in result
 
 
+def test_handle_omh_start_work_still_refuses_when_only_a_draft_exists():
+    plan_module = _load_module('omh_plan')
+    module = _load_module('omh_start_work')
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_draft_plan_payload('add auth middleware', workspace=workspace)
+
+        result = module.handle_omh_start_work_command('', workspace=workspace)
+
+        assert 'No canonical OMH plan found for this request.' in result
+        assert 'Run `omh-plan` first, then retry `omh-start-work`.' in result
+
+
+def test_handle_omh_start_work_bootstraps_after_draft_is_finalized():
+    plan_module = _load_module('omh_plan')
+    start_module = _load_module('omh_start_work')
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        plan_module.build_draft_plan_payload('add auth middleware', workspace=workspace)
+        plan_module.finalize_draft_plan_payload('add-auth-middleware', workspace=workspace)
+
+        payload = start_module.build_start_work_payload('', workspace=workspace)
+
+        assert payload['mode'] == 'fresh-start'
+        assert payload['plan']['name'] == 'add-auth-middleware'
+
+
 def test_handle_omh_start_work_bootstraps_state_from_single_canonical_plan():
     plan_module = _load_module('omh_plan')
     start_module = _load_module('omh_start_work')
